@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- README: a keybinding to toggle the panel (`SUPER + A`)
 - New session view (`n` or +): every folder an agent has worked in, last used
   first, or a path you type; starts an installed agent there, by default the
   one you used in that folder last

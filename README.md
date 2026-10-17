@@ -63,6 +63,13 @@ Press `s` (or the gear) in the panel. Changes are saved to your bar config
 omarchy plugin add https://github.com/ramoncardena/omaisessions
 ```
 
+To open it with a key, add a binding to `~/.config/hypr/bindings.lua`
+(`SUPER + A` is free in Omarchy's defaults):
+
+```lua
+o.bind("SUPER + A", "AI sessions", "omarchy-shell shell toggle io.github.ramoncardena.omaisessions")
+```
+
 For development, from a clone:
 
 ```bash
