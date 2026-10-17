@@ -2,6 +2,10 @@
 
 ## 0.3.0
 
+- Security review: a session opens only in the folder its own history
+  records, a window address must be hex before it reaches Hyprland's Lua
+  dispatch, and the README documents everything the plugin reads, writes
+  and runs
 - New icon: a robot head whose antenna is a return arrow
   (`assets/icon.svg`), so it no longer looks like the built-in Agents widget
 - OpenCode sessions, read from its database (`opencode.db`); resume with

@@ -858,6 +858,9 @@ def window_for(pid):
 
 
 def focus(address):
+    # The address goes inside a Lua string: accept only what hyprctl prints.
+    if not re.fullmatch(r"0x[0-9a-fA-F]{1,16}", str(address)):
+        return False
     # Lua dispatch on current Hyprland; the classic dispatcher otherwise.
     for cmd in (["hyprctl", "dispatch", 'hl.dsp.focus({ window = "address:%s" })' % address],
                 ["hyprctl", "dispatch", "focuswindow", "address:" + address]):
@@ -886,6 +889,9 @@ def cmd_open(args):
     current = next((s for s in sessions if s["agent"] == agent_id and s["id"] == sid), None)
     if current is None:
         fail("That session is gone: it ended before its first prompt, or its history was deleted")
+    # The folder comes from the session's own history, not from the caller.
+    if cwd != current["cwd"]:
+        fail("That folder is not where this session was started: " + cwd)
     if current["running"]:
         address = window_for(current["pid"])
         if address and focus(address):

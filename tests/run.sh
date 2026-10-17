@@ -278,6 +278,14 @@ out=$("$HELPER" open codex bbbbbbbb-0000-0000-0000-000000000001 "$HOME/Projects/
 check "running session is focused" test "$(jq -r .focused <<<"$out")" = true
 check "focus targets the terminal window" grep -q 'address:0xfeed' "$T/focused"
 check "no second copy is launched" test ! -e "$T/launched"
+# A window address that isn't hex never reaches the Lua dispatch.
+cat >"$T/stub/hyprctl" <<STUB
+#!/bin/bash
+if [[ \$1 == clients ]]; then echo '[{"pid":$$,"address":"0x1\\" }) os.exit() --"}]'; else echo "\$*" >>"$T/focused-bad"; echo ok; fi
+STUB
+out=$("$HELPER" open codex bbbbbbbb-0000-0000-0000-000000000001 "$HOME/Projects/app")
+check "odd window addresses are not dispatched" test ! -e "$T/focused-bad"
+check "odd window address reads as no window" jq -e '.error | test("window can.t be found")' <<<"$out"
 printf '#!/bin/bash\necho "[]"\n' >"$T/stub/hyprctl"
 check "running without a window explains" bash -c "'$HELPER' open codex bbbbbbbb-0000-0000-0000-000000000001 '$HOME/Projects/app' | jq -e '.error | test(\"Already running\")' >/dev/null"
 stop
@@ -361,10 +369,11 @@ rm -f "$T/launched"
 "$HELPER" open opencode ses_titled0000000001 "$HOME/Projects/app" >/dev/null; sleep 0.3
 check "opencode resume command" test "$(tail -n 4 "$T/launched" | tr '\n' ' ')" = "-e opencode --session ses_titled0000000001 "
 check "open rejects a missing folder" bash -c "! '$HELPER' open claude aaaaaaaa-0000-0000-0000-000000000003 '$HOME/gone' >/dev/null"
+check "open uses the session's own folder" bash -c "'$HELPER' open claude aaaaaaaa-0000-0000-0000-000000000001 '$HOME/Projects/app' | jq -e '.error | test(\"not where this session\")' >/dev/null"
 check "open rejects relative folders" bash -c "! '$HELPER' open claude aaaaaaaa-0000-0000-0000-000000000001 Projects >/dev/null"
 check "open rejects option-like ids" bash -c "! '$HELPER' open claude --dangerously-skip-permissions '$HOME' >/dev/null"
 check "open rejects unknown agents" bash -c "! '$HELPER' open rm aaaaaaaa-0000-0000-0000-000000000001 '$HOME' >/dev/null"
-check "open reports a missing agent" bash -c "PATH='$T/nostub:/usr/bin' '$HELPER' open claude aaaaaaaa-0000-0000-0000-000000000001 '$HOME' | jq -e '.error | test(\"not installed\")' >/dev/null"
+check "open reports a missing agent" bash -c "PATH='$T/nostub:/usr/bin' '$HELPER' open claude aaaaaaaa-0000-0000-0000-000000000001 '$HOME/Projects/my-app' | jq -e '.error | test(\"not installed\")' >/dev/null"
 check "unknown command fails" bash -c "! '$HELPER' frobnicate >/dev/null"
 
 echo

@@ -80,6 +80,44 @@ These history formats are internal to each agent and can change between
 versions; each agent has its own small reader, so a format change breaks only
 that tab.
 
+## Privacy and security
+
+Omarchy plugins run unsandboxed, as you, inside the shell. This is
+everything omAiSessions touches, so you can check it before enabling it.
+
+**Reads**
+- The agents' history folders listed above. Only the session list, titles,
+  first prompts and folders are extracted. OpenCode's database also holds its
+  login tokens; only its `session`, `message` and `part` tables are queried,
+  read-only.
+- `/proc`, to tell which sessions are running: each process's command line,
+  working folder, start time and open file paths. For `codex` processes only,
+  the environment is read to find `CODEX_HOME` (it can hold API keys; only
+  `CODEX_HOME` and `HOME` are used, and nothing from it is kept or shown).
+- Your home folder's directory names, up to three levels deep, only to match
+  a Cursor chat to its folder.
+
+**Writes**
+- `~/.cache/omaisessions/index.json` (mode `600`): the extracted titles and
+  first prompts, so a refresh doesn't re-read unchanged files. Nothing else is
+  written, and agent history is never modified.
+
+**Runs**
+- Your terminal via `xdg-terminal-exec` (through `uwsm-app` when present),
+  with the agent's own resume command, when you pick a session.
+- `hyprctl`, to find and focus a running session's window.
+
+Every command is an argument list, never a shell string. Session ids must
+match a strict pattern before they reach a command line, a session opens in
+the folder its own history records, and titles are shown as plain text.
+There is no network access.
+
+**Dependencies:** `python3` (standard library only), `xdg-terminal-exec`,
+`hyprctl`; all ship with Omarchy.
+
+**Removing** the plugin leaves its cache behind; delete it with
+`rm -r ~/.cache/omaisessions`.
+
 ## IPC
 
 ```bash
