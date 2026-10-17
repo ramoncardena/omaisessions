@@ -3,7 +3,9 @@
 ## 0.2.1
 
 - Detect running sessions of current Codex (0.162+), which runs them in a
-  `codex app-server` process; they showed as not running before
+  `codex app-server` daemon; they showed as not running before. The daemon
+  keeps closed sessions loaded, so a session counts as running only while a
+  Codex window is attached
 - List running sessions that have no prompt yet as "New session" (Claude,
   Codex, Grok), so they can be switched to
 - Explain when a session ended before its first prompt instead of trying to

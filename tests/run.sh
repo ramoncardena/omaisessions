@@ -167,7 +167,9 @@ check "nothing running yet" test "$(list | jq '[.sessions[] | select(.running)] 
 pids=()
 # Stand-ins never inherit stdout, so piping this script never waits on them.
 spawn() { "$@" >/dev/null 2>&1 & pids+=($!); }
-trap 'kill "${pids[@]}" 2>/dev/null; rm -rf "$T"' EXIT
+# Children too: a stand-in shell's sleep would outlive it.
+stop() { for p in "${pids[@]}"; do pkill -P "$p"; kill "$p"; done 2>/dev/null; pids=(); sleep 0.2; }
+trap 'stop; rm -rf "$T"' EXIT
 start_of() { awk '{print $22}' "/proc/$1/stat"; }
 mkdir -p "$CLAUDE_CONFIG_DIR/sessions"
 spawn bash -c 'exec -a claude sleep 300'; cp=$!
@@ -192,17 +194,17 @@ check "others are not running" test "$(jq '[.sessions[] | select(.running)] | le
 check "agent running counts" test "$(jq -c '[.agents[] | .running]' <<<"$out")" = '[1,1,1,1]'
 
 # Codex named on its command line (`codex resume <id>`), no open file.
-kill "${pids[@]}" 2>/dev/null; pids=(); sleep 0.2
+stop
 spawn bash -c 'exec -a codex python3 -c "import time; time.sleep(300)" resume bbbbbbbb-0000-0000-0000-000000000001'
 sleep 0.3
 check "codex running from its argv" test "$(field bbbbbbbb-0000-0000-0000-000000000001 running)" = true
-kill "${pids[@]}" 2>/dev/null; pids=(); sleep 0.2
+stop
 # A fresh codex in a folder: the session there written since it started.
 spawn bash -c "cd '$HOME/Projects/app' && exec -a codex sleep 300"
 sleep 1.2; touch "$X/rollout-2026-10-12T10-00-00-bbbbbbbb-0000-0000-0000-000000000001.jsonl"
 check "codex running from its folder" test "$(field bbbbbbbb-0000-0000-0000-000000000001 running)" = true
 
-kill "${pids[@]}" 2>/dev/null; pids=(); sleep 0.2
+stop
 # A shell whose script merely mentions an agent is not that agent.
 spawn bash -c "cd '$HOME/Projects/deep/one' && sleep 300; : cursor-agent /x/cursor-agent/1/index.js codex"
 sleep 1.2; touch "$(ls "$CURSOR_CONFIG_DIR"/chats/*/dddddddd-0000-0000-0000-000000000003/store.db)"
@@ -225,27 +227,34 @@ check "focus targets the terminal window" grep -q 'address:0xfeed' "$T/focused"
 check "no second copy is launched" test ! -e "$T/launched"
 printf '#!/bin/bash\necho "[]"\n' >"$T/stub/hyprctl"
 check "running without a window explains" bash -c "'$HELPER' open codex bbbbbbbb-0000-0000-0000-000000000001 '$HOME/Projects/app' | jq -e '.error | test(\"Already running\")' >/dev/null"
-kill "${pids[@]}" 2>/dev/null; pids=(); sleep 0.2
+stop
 
-# Current Codex: the TUI starts an app-server, which holds a lock per live
-# session (before the first prompt there is no rollout at all), and an
-# updater beside it. Neither helper counts as a session of its own.
-L="$CODEX_HOME/thread-writer-locks"; mkdir -p "$L"
-: >"$L/eeeeeeee-0000-0000-0000-000000000001.lock"; : >"$L/eeeeeeee-0000-0000-0000-000000000002.lock"
-spawn bash -c "cd '$HOME/Projects/app' && exec -a codex bash -c \"(exec 3<'$L/eeeeeeee-0000-0000-0000-000000000001.lock' 4<'$L/eeeeeeee-0000-0000-0000-000000000002.lock'; exec -a codex sleep 300) & (exec -a codex sleep 300) & wait\""
+# Current Codex: clients attach to a `codex app-server` daemon that holds a
+# lock per loaded session (before the first prompt there is no rollout at
+# all) and keeps closed sessions loaded after their window is gone.
+L="$CODEX_HOME/thread-writer-locks"; mkdir -p "$L" "$T/srv"
+: >"$L/eeeeeeee-0000-0000-0000-000000000001.lock"; : >"$L/bbbbbbbb-0000-0000-0000-000000000001.lock"
+printf 'sleep 300; :\n' >"$T/srv/app-server"
+spawn bash -c "cd '$T/srv' && exec 3<'$L/eeeeeeee-0000-0000-0000-000000000001.lock' 4<'$L/bbbbbbbb-0000-0000-0000-000000000001.lock' && exec -a codex bash app-server"
+srv=("${pids[@]}")
+sleep 0.3
+check "codex server alone is not a session" test "$(list | jq '[.sessions[] | select(.running)] | length')" = 0
+spawn bash -c "cd '$HOME/Projects/app' && exec -a codex sleep 300"; c1=$!
+spawn bash -c "cd '$HOME/Projects/my-app' && exec -a codex sleep 300"; c2=$!
 echo "[{\"session_id\":\"cccccccc-0000-0000-0000-00000000000f\",\"pid\":$$,\"pid_start\":$(start_of $$),\"cwd\":\"$HOME/Projects/my-app\"}]" >"$GROK_HOME/active_sessions.json"
-sleep 1.2; touch "$X/rollout-2026-10-12T10-00-00-bbbbbbbb-0000-0000-0000-000000000001.jsonl"
+sleep 0.3
 out=$(list)
-new() { jq -r --arg id "$1" '.sessions[] | select(.id == $id) | [.title, .cwd, .running, .new] | join("|")' <<<"$out"; }
-check "codex running from its app-server lock" test "$(new eeeeeeee-0000-0000-0000-000000000001)" = "New session|$HOME/Projects/app|true|true"
-check "one app-server, several sessions" test "$(new eeeeeeee-0000-0000-0000-000000000002)" = "New session|$HOME/Projects/app|true|true"
-check "codex helpers are not sessions" test "$(run bbbbbbbb-0000-0000-0000-000000000001)" = false
-check "grok running before its first prompt" test "$(new cccccccc-0000-0000-0000-00000000000f)" = "New session|$HOME/Projects/my-app|true|true"
+new() { jq -r --arg id "$1" '.sessions[] | select(.id == $id) | [.title, .cwd, .running, .new, .pid] | join("|")' <<<"$out"; }
+check "codex client on the locked session in its folder" test "$(jq -r '.sessions[] | select(.id == "bbbbbbbb-0000-0000-0000-000000000001") | [.running, .pid] | join("|")' <<<"$out")" = "true|$c1"
+check "codex client on a new locked session" test "$(new eeeeeeee-0000-0000-0000-000000000001)" = "New session|$HOME/Projects/my-app|true|true|$c2"
+check "grok running before its first prompt" test "$(new cccccccc-0000-0000-0000-00000000000f)" = "New session|$HOME/Projects/my-app|true|true|$$"
 check "new sessions count per agent" test "$(jq -c '[.agents[] | .running]' <<<"$out")" = '[0,2,1,0]'
-for p in "${pids[@]}"; do pkill -P "$p"; kill "$p"; done 2>/dev/null; pids=(); sleep 0.2
-rm -f "$CLAUDE_CONFIG_DIR"/sessions/*.json "$GROK_HOME/active_sessions.json"
+kill "$c1" "$c2"; sleep 0.2
+check "closed codex windows stop running" test "$(list | jq '[.sessions[] | select(.agent == "codex" and .running)] | length')" = 0
 check "new session vanishes when it ends" test -z "$(field eeeeeeee-0000-0000-0000-000000000001 id)"
 check "opening an ended new session explains" bash -c "'$HELPER' open codex eeeeeeee-0000-0000-0000-000000000001 '$HOME/Projects/app' | jq -e '.error | test(\"gone\")' >/dev/null"
+stop
+rm -f "$CLAUDE_CONFIG_DIR"/sessions/*.json "$GROK_HOME/active_sessions.json"
 
 # Codex fallback title when the index has no name.
 : >"$CODEX_HOME/session_index.jsonl"
