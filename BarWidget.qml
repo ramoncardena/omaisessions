@@ -21,6 +21,10 @@ BarWidget {
 
   readonly property int maxSessions: Math.max(20, Number(setting("maxSessions", 200)) || 200)
   readonly property int refreshSeconds: Math.max(2, Math.min(300, Number(setting("refreshSeconds", 5)) || 5))
+  // The bar icon matches the font icons beside it (measured: ink rows 7-17
+  // of the bar, 10 px wide, at the default 16 px canvas).
+  readonly property real iconScale: 0.72
+  readonly property real iconLine: 1.7
   readonly property bool notifyNeedsYou: setting("notifyNeedsYou", true) !== false
 
   property var agents: []
@@ -188,7 +192,10 @@ BarWidget {
     bar: root.bar
     // The plugin's own mark (SessionIcon.qml), in the bar's color.
     iconComponent: Component {
+      // Drawn at the font icons' visual size, with their line weight.
       SessionIcon {
+        size: button.opticalSize * root.iconScale
+        lineWidth: root.iconLine
         color: button.active && button.useActiveColor ? button.activeColor : button.foreground
       }
     }

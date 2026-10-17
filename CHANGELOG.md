@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Bar icon drawn at the font icons' size and line weight: it filled the
+  whole 16 px canvas and sat 2 px past the other icons at top and bottom
+
 ## 0.4.0
 
 - Running sessions show what they're doing: working, needs you (with the

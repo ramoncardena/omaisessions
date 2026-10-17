@@ -9,6 +9,8 @@ Item {
   id: root
 
   property real size: 16
+  // Line weight in pixels at this size; the drawing's own is 1.5 of 16.
+  property real lineWidth: size * 1.5 / 16
   property color color: Color.foreground
 
   implicitWidth: size
@@ -18,14 +20,14 @@ Item {
     width: 16
     height: 16
     anchors.centerIn: parent
-    scale: Math.min(root.width, root.height) / 16
+    scale: root.size / 16
     preferredRendererType: Shape.CurveRenderer
 
     // Head and antenna-arrow.
     ShapePath {
       fillColor: "transparent"
       strokeColor: root.color
-      strokeWidth: 1.5
+      strokeWidth: root.lineWidth * 16 / root.size
       capStyle: ShapePath.RoundCap
       joinStyle: ShapePath.RoundJoin
       PathSvg {
