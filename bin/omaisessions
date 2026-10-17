@@ -293,6 +293,16 @@ class Codex:
             return sid if SESSION_ID.match(sid) else None
         return None
 
+    def owns(self, pid):
+        # A client uses the sessions of its own CODEX_HOME; another one's
+        # (a second profile, or a test) is not ours to pair it with.
+        try:
+            env = dict(e.split("=", 1) for e in (PROC / str(pid) / "environ").read_bytes().decode("utf-8", "replace").split("\0") if "=" in e)
+        except OSError:
+            return True
+        home = env.get("CODEX_HOME") or os.path.join(env.get("HOME") or str(HOME), ".codex")
+        return os.path.realpath(home) == os.path.realpath(self.home)
+
     def is_server(self, argv):
         # `codex app-server ...`: the session server and its updater.
         return len(argv) > 1 and argv[1] == "app-server"
@@ -587,20 +597,31 @@ def find_running(sessions):
         else:
             running.setdefault((agent.id, hit), (pid, None))
 
-    for pid, agent in pending:
+    def started_of(pid):
+        start = proc_start(pid)
+        return boot + int(start) / tick if start and boot else 0
+
+    # Newest client first, so each takes the session it opened last.
+    for pid, agent in sorted(pending, key=lambda c: started_of(c[0]), reverse=True):
         cwd = cwd_of(pid)
-        pool = [sid for _, sid in sorted(set(locks.get(agent.id, [])), reverse=True) if (agent.id, sid) not in running]
-        if pool:
-            # The locked session in this client's folder; else the newest
-            # one with no history yet (just started); else the newest.
-            sid = (next((x for x in pool if cwds.get((agent.id, x)) == cwd), None)
-                   or next((x for x in pool if (agent.id, x) not in ids), None) or pool[0])
+        started = started_of(pid)
+        if hasattr(agent, "owns") and not agent.owns(pid):
+            continue
+        pool = [(mtime, sid) for mtime, sid in sorted(set(locks.get(agent.id, [])), reverse=True)
+                if (agent.id, sid) not in running]
+        # A session is locked when a client opens it, so this client is on
+        # one locked since it started (the newest, after a /resume): in its
+        # folder (a session with history elsewhere is another client's). A
+        # lock from before it started belongs to a client that may have
+        # closed; only take one in this client's folder.
+        since = [sid for mtime, sid in pool if mtime >= started - 2 and cwds.get((agent.id, sid), cwd) == cwd]
+        sid = (next((x for x in since if cwds.get((agent.id, x)) == cwd), None) or (since[0] if since else None)
+               or next((x for _, x in pool if cwds.get((agent.id, x)) == cwd and (agent.id, x) in ids), None))
+        if sid:
             running[(agent.id, sid)] = (pid, cwd)
             continue
         # Fall back to the folder: the newest session there that changed
         # since this process started.
-        start = proc_start(pid)
-        started = boot + int(start) / tick if start and boot else 0
         for s in sessions:  # newest first
             if s["agent"] == agent.id and s["cwd"] == cwd and s["updated"] >= started - 5:
                 running.setdefault((agent.id, s["id"]), (pid, None))

@@ -240,7 +240,10 @@ srv=("${pids[@]}")
 sleep 0.3
 check "codex server alone is not a session" test "$(list | jq '[.sessions[] | select(.running)] | length')" = 0
 spawn bash -c "cd '$HOME/Projects/app' && exec -a codex sleep 300"; c1=$!
+sleep 1.1
 spawn bash -c "cd '$HOME/Projects/my-app' && exec -a codex sleep 300"; c2=$!
+# Locks predate the clients, except the one c2 took when it started.
+touch -d '-1 hour' "$L/bbbbbbbb-0000-0000-0000-000000000001.lock"; sleep 0.1; touch "$L/eeeeeeee-0000-0000-0000-000000000001.lock"
 echo "[{\"session_id\":\"cccccccc-0000-0000-0000-00000000000f\",\"pid\":$$,\"pid_start\":$(start_of $$),\"cwd\":\"$HOME/Projects/my-app\"}]" >"$GROK_HOME/active_sessions.json"
 sleep 0.3
 out=$(list)
@@ -250,6 +253,15 @@ check "codex client on a new locked session" test "$(new eeeeeeee-0000-0000-0000
 check "grok running before its first prompt" test "$(new cccccccc-0000-0000-0000-00000000000f)" = "New session|$HOME/Projects/my-app|true|true|$$"
 check "new sessions count per agent" test "$(jq -c '[.agents[] | .running]' <<<"$out")" = '[0,2,1,0]'
 kill "$c1" "$c2"; sleep 0.2
+# A new client in a folder whose closed session is still loaded: it is on
+# the session it locked when it started, not the old one.
+spawn bash -c "cd '$HOME/Projects/app' && exec -a codex sleep 300"; c3=$!
+sleep 0.2; : >"$L/eeeeeeee-0000-0000-0000-000000000002.lock"
+spawn bash -c "cd '$T/srv' && exec 3<'$L/eeeeeeee-0000-0000-0000-000000000002.lock' && exec -a codex bash app-server"
+sleep 0.3; out=$(list)
+check "new codex window beats an old lock in its folder" test "$(new eeeeeeee-0000-0000-0000-000000000002)" = "New session|$HOME/Projects/app|true|true|$c3"
+check "old loaded session is not running" test "$(run bbbbbbbb-0000-0000-0000-000000000001)" = false
+kill "$c3"; sleep 0.2
 check "closed codex windows stop running" test "$(list | jq '[.sessions[] | select(.agent == "codex" and .running)] | length')" = 0
 check "new session vanishes when it ends" test -z "$(field eeeeeeee-0000-0000-0000-000000000001 id)"
 check "opening an ended new session explains" bash -c "'$HELPER' open codex eeeeeeee-0000-0000-0000-000000000001 '$HOME/Projects/app' | jq -e '.error | test(\"gone\")' >/dev/null"
