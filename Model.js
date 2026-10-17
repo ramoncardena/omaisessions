@@ -62,25 +62,24 @@ function agentShortName(id) {
   }
 }
 
-// Sessions for one tab ("all", "running", "projects" with the open project,
-// or an agent id), narrowed by a free-text query on the title or the folder.
-function filter(sessions, tab, query, limit, project) {
+// Sessions for one agent ("all" or an agent id), optionally inside one
+// project, narrowed by a free-text query on the title or the folder. Running
+// sessions come first, by what needs you (needs you, your turn, working);
+// the rest stay newest first.
+function filter(sessions, agent, query, limit, project) {
   var q = String(query || "").trim().toLowerCase()
-  var result = []
-  for (var i = 0; i < sessions.length && result.length < limit; i++) {
+  var active = [], rest = []
+  for (var i = 0; i < sessions.length; i++) {
     var s = sessions[i]
-    if (tab === "projects") { if (s.project !== project) continue }
-    else if (tab === "running" ? !s.running : tab !== "all" && s.agent !== tab) continue
+    if (project && s.project !== project) continue
+    if (agent !== "all" && s.agent !== agent) continue
     if (q !== "" && String(s.title).toLowerCase().indexOf(q) < 0 && String(s.cwd).toLowerCase().indexOf(q) < 0) continue
-    result.push(s)
+    ;(s.running ? active : rest).push(s)
   }
-  if (tab === "running") {
-    // Stable: within a rank, newest first as listed.
-    var ranked = result.map(function(s, i) { return { s: s, i: i } })
-    ranked.sort(function(a, b) { return attentionRank(a.s) - attentionRank(b.s) || a.i - b.i })
-    result = ranked.map(function(r) { return r.s })
-  }
-  return result
+  // Stable: within a rank, newest first as listed.
+  var ranked = active.map(function(s, i) { return { s: s, i: i } })
+  ranked.sort(function(a, b) { return attentionRank(a.s) - attentionRank(b.s) || a.i - b.i })
+  return ranked.map(function(r) { return r.s }).concat(rest.slice(0, Math.max(0, limit - active.length)))
 }
 
 // Folders to start a new session in, narrowed by the query. A query that is
@@ -108,10 +107,12 @@ function folderChoices(folders, query, home) {
   return result
 }
 
-// Projects narrowed by a query on their name or path.
-function filterProjects(projects, query, home) {
+// Projects narrowed by an agent ("all" or an id) and a query on their name
+// or path.
+function filterProjects(projects, query, home, agent) {
   var q = String(query || "").trim().toLowerCase()
   return projects.filter(function(p) {
+    if (agent && agent !== "all" && (p.agents || []).indexOf(agent) < 0) return false
     return q === "" || String(p.name).toLowerCase().indexOf(q) >= 0 || shortPath(p.path, home).toLowerCase().indexOf(q) >= 0
   })
 }

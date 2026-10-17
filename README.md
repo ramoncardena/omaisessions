@@ -10,8 +10,10 @@ resuming it.
 
 ## Features
 
-- One tab per agent (Claude Code, Codex, Grok, Cursor, OpenCode), plus **All**,
-  **Running** and **Projects** tabs
+- Two views, **Sessions** and **Projects**, and a row of agent chips (All,
+  then each agent with sessions) that narrows either one
+- Running sessions are pinned at the top under **Active**: what needs you
+  first, then what's done, then what's working
 - Projects: sessions grouped by git repository (subfolders and worktrees
   count as the repository) or by folder outside git, across every agent;
   `Enter` opens one, `n` starts a new session there
@@ -41,7 +43,8 @@ resuming it.
 | Key | Action |
 |---|---|
 | `↑` `↓` / `j` `k` | Select a session |
-| `←` `→` / `h` `l`, `1`–`9` | Switch agent tab |
+| `←` `→` / `h` `l` | Sessions / Projects |
+| `a`, `1`–`9` | Next agent chip / pick a chip (`1` is All) |
 | `Enter` | Resume in a terminal, or switch to it if it's running |
 | `/` | Search (Esc clears, ↓ back to the list) |
 | `r` | Refresh |

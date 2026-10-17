@@ -8,7 +8,7 @@ import "Model.js" as Model
 
 // The omAiSessions popup. BarWidget.qml owns all state and helper processes
 // and injects itself as `hostWidget`; this file is only the view plus
-// view-local state (tab, search, keyboard cursor).
+// view-local state (view, agent filter, search, keyboard cursor).
 Panel {
   id: root
   moduleName: "io.github.ramoncardena.omaisessions"
@@ -33,14 +33,16 @@ Panel {
   readonly property color dim: Qt.darker(root.foreground, 1.4)
   readonly property string fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
 
-  property string tab: "all"
+  // Sessions or Projects; the agent chips narrow either one.
+  property string tab: "sessions"
+  property string agentFilter: "all"
   property int cursorIndex: 0
 
   // The Projects tab lists projects; Enter opens one to list its sessions.
   property string openProject: ""
   property int projectCursor: 0
   readonly property bool listingProjects: tab === "projects" && openProject === ""
-  readonly property var visibleProjects: Model.filterProjects(root.host.projects, searchField.text, root.host.home)
+  readonly property var visibleProjects: Model.filterProjects(root.host.projects, searchField.text, root.host.home, root.agentFilter)
 
   function enterProject() {
     if (!visibleProjects.length) return
@@ -80,21 +82,27 @@ Panel {
     else save({ maxSessions: Math.max(20, Math.min(2000, root.host.maxSessions + dx * 20)) })
   }
 
-  // "All", "Running" while anything runs, "Projects", and one tab per agent
-  // that has sessions on this computer.
-  readonly property var tabs: {
+  readonly property var viewOptions: [{ value: "sessions", label: "Sessions" }, { value: "projects", label: "Projects" }]
+
+  // "All", then each agent that has sessions on this computer.
+  readonly property var agentChips: {
     var list = [{ value: "all", label: "All" }]
-    if (root.host.runningCount > 0) list.push({ value: "running", label: "Running " + root.host.runningCount })
-    if (root.host.projects.length > 1) list.push({ value: "projects", label: "Projects" })
     for (var i = 0; i < root.host.agents.length; i++) {
       var a = root.host.agents[i]
-      // Short names ("Claude", not "Claude Code") keep the row on one line.
       if (a.count > 0) list.push({ value: a.id, label: Model.agentShortName(a.id) })
     }
     return list
   }
+  function cycleAgent(step) {
+    var i = 0
+    for (var k = 0; k < agentChips.length; k++) if (agentChips[k].value === agentFilter) i = k
+    agentFilter = agentChips[(i + step + agentChips.length) % agentChips.length].value
+  }
 
-  readonly property var visibleSessions: Model.filter(root.host.sessions, root.tab, searchField.text, root.host.maxSessions, root.openProject)
+  // Active sessions (needs you, your turn, working) first, then the rest.
+  readonly property var visibleSessions: Model.filter(root.host.sessions, root.agentFilter, searchField.text,
+    root.host.maxSessions, root.tab === "projects" ? root.openProject : "")
+  readonly property int activeShown: visibleSessions.filter(function(s) { return s.running }).length
 
   // ---- New session: a folder (one you've used, or a path you type) and an
   // installed agent, by default the one you used there last.
@@ -137,9 +145,7 @@ Panel {
   }
 
   function moveTab(dx) {
-    var i = 0
-    for (var k = 0; k < tabs.length; k++) if (tabs[k].value === tab) i = k
-    tab = tabs[Math.max(0, Math.min(tabs.length - 1, i + dx))].value
+    tab = dx > 0 ? "projects" : "sessions"
   }
 
   function moveCursor(dy) {
@@ -191,8 +197,12 @@ Panel {
     projectCursor = 0
     openProject = ""
   }
-  // The Running tab disappears when the last session ends.
-  onTabsChanged: if (!tabs.some(function(t) { return t.value === root.tab })) tab = "all"
+  onAgentFilterChanged: {
+    cursorIndex = 0
+    projectCursor = 0
+  }
+  // An agent's chip goes away when its last session does.
+  onAgentChipsChanged: if (!agentChips.some(function(c) { return c.value === root.agentFilter })) agentFilter = "all"
   onVisibleSessionsChanged: {
     var found = -1
     for (var i = 0; i < visibleSessions.length && found < 0; i++)
@@ -213,9 +223,12 @@ Panel {
       if (root.hostWidget) root.hostWidget.errorMessage = ""
       view = "sessions"
       openProject = ""
-      // An agent waiting on you is why you opened this: start on it, so
-      // Enter switches straight to its window.
-      if (root.host.needsYouCount > 0) tab = "running"
+      // An agent waiting on you is why you opened this: it's first in the
+      // sessions list, so Enter switches straight to its window.
+      if (root.host.needsYouCount > 0) {
+        tab = "sessions"
+        agentFilter = "all"
+      }
       cursorIndex = 0
       sessionList.positionViewAtBeginning()
     } else {
@@ -267,7 +280,8 @@ Panel {
         else if (text === "/" && !root.showSettings) searchFocusTimer.restart()
         else if (root.view !== "sessions") return
         else if (text === "r" && root.hostWidget) root.hostWidget.refresh()
-        else if (text >= "1" && text <= "9" && Number(text) <= root.tabs.length) root.tab = root.tabs[Number(text) - 1].value
+        else if (text === "a") root.cycleAgent(1)
+        else if (text >= "1" && text <= "9" && Number(text) <= root.agentChips.length) root.agentFilter = root.agentChips[Number(text) - 1].value
       }
 
       Column {
@@ -338,14 +352,30 @@ Panel {
         }
 
         ButtonGroup {
-          visible: root.tabs.length > 1 && root.view === "sessions"
-          options: root.tabs
+          visible: root.view === "sessions"
+          options: root.viewOptions
           value: root.tab
           focusable: false
           foreground: root.foreground
           fontFamily: root.fontFamily
           fontSize: Style.font.bodySmall
           onChanged: function(value) { root.tab = value }
+        }
+
+        // Agent chips: wraps rather than overflowing, whatever is installed.
+        Flow {
+          visible: root.view === "sessions" && root.agentChips.length > 2
+          width: parent.width
+          spacing: Style.space(6)
+          Repeater {
+            model: root.agentChips
+            Chip {
+              required property var modelData
+              label: modelData.label
+              selected: root.agentFilter === modelData.value
+              onClicked: root.agentFilter = modelData.value
+            }
+          }
         }
 
         TextField {
@@ -440,12 +470,33 @@ Panel {
           boundsBehavior: Flickable.StopAtBounds
           model: root.visibleSessions
           ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-          delegate: SessionRow {
+          // ACTIVE above the running sessions and RECENT above the rest, when
+          // anything is running.
+          delegate: Column {
+            id: entry
             required property var modelData
             required property int index
+            readonly property string heading: root.tab !== "sessions" || root.activeShown === 0 ? ""
+              : index === 0 ? (modelData.running ? "ACTIVE" : "RECENT")
+              : root.visibleSessions[index - 1].running && !modelData.running ? "RECENT" : ""
             width: sessionList.width
-            session: modelData
-            rowIndex: index
+            spacing: Style.space(2)
+            Text {
+              visible: entry.heading !== ""
+              topPadding: entry.index === 0 ? 0 : Style.space(8)
+              leftPadding: Style.space(10)
+              textFormat: Text.PlainText
+              text: entry.heading
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.letterSpacing: 1
+            }
+            SessionRow {
+              width: parent.width
+              session: entry.modelData
+              rowIndex: entry.index
+            }
           }
         }
 
@@ -538,15 +589,46 @@ Panel {
           textFormat: Text.PlainText
           text: root.showSettings ? "↑↓ select · ←→ change · Enter toggle · s or Esc back"
             : root.showNew ? "↑↓ folder · ←→ agent · Enter start · / filter or type a path · Esc back"
-            : root.listingProjects ? "↑↓ select · Enter open project · ←→ tab · / search · n new · s settings"
-            : root.openProject !== "" ? "↑↓ select · Enter resume or switch · n new here · Esc back"
-            : "↑↓ select · ←→ tab · Enter resume or switch · / search · n new · s settings"
+            : root.listingProjects ? "↑↓ select · Enter open · ←→ view · a agent · / search · n new · s settings"
+            : root.openProject !== "" ? "↑↓ select · Enter resume or switch · a agent · n new here · Esc back"
+            : "↑↓ select · Enter resume or switch · ←→ view · a agent · / search · n new · s settings"
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
         }
       }
+    }
+  }
+
+  component Chip: Rectangle {
+    id: chip
+    property string label: ""
+    property bool selected: false
+    signal clicked()
+
+    implicitWidth: chipText.implicitWidth + Style.space(18)
+    implicitHeight: chipText.implicitHeight + Style.space(8)
+    radius: Style.cornerRadius > 0 ? height / 2 : 0
+    color: selected ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.14) : "transparent"
+    border.width: 1
+    border.color: selected ? Color.accent : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, chipMouse.containsMouse ? 0.5 : 0.22)
+
+    Text {
+      id: chipText
+      anchors.centerIn: parent
+      textFormat: Text.PlainText
+      text: chip.label
+      color: chip.selected ? root.foreground : root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+    }
+    MouseArea {
+      id: chipMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: chip.clicked()
     }
   }
 
@@ -720,7 +802,7 @@ Panel {
       Text {
         Layout.fillWidth: true
         textFormat: Text.PlainText
-        text: (root.tab === "all" || root.tab === "running" || root.tab === "projects" ? Model.agentShortName(row.session.agent) + " · " : "")
+        text: (root.agentFilter === "all" ? Model.agentShortName(row.session.agent) + " · " : "")
           + Model.shortPath(row.session.cwd, root.host.home)
           + (row.session.branch ? " (" + row.session.branch + ")" : "")
           + (row.missing ? " · folder missing" : "")
