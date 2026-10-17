@@ -1,0 +1,323 @@
+#!/usr/bin/env python3
+"""omAiSessions helper: finds coding-agent conversations and reopens them.
+
+Every command prints a single JSON object on stdout. Failures print
+{"ok": false, "error": "..."} and exit non-zero, so the QML side can show the
+message without parsing stderr.
+
+  omaisessions list [--limit N]          every known session, newest first
+  omaisessions open <agent> <id> <cwd>   resume a session in a terminal in <cwd>
+
+Agents keep their history per folder, in their own internal formats, so each
+one gets a small reader below. Readers only extract what the panel shows
+(title, folder, last activity); results are cached by file mtime and size, so
+a refresh only re-reads the files that changed.
+"""
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+CACHE_VERSION = 1
+HOME = Path.home()
+CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME") or HOME / ".cache") / "omaisessions"
+CACHE_FILE = CACHE_DIR / "index.json"
+
+# Session ids end up on a command line; only accept what the agents generate.
+SESSION_ID = re.compile(r"^[0-9A-Za-z][0-9A-Za-z_-]{7,63}$")
+TITLE_LIMIT = 120
+
+
+def out(obj, code=0):
+    sys.stdout.write(json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\n")
+    sys.exit(code)
+
+
+def fail(message):
+    out({"ok": False, "error": message}, 1)
+
+
+def one_line(text):
+    text = " ".join(str(text).split())
+    return text if len(text) <= TITLE_LIMIT else text[: TITLE_LIMIT - 1].rstrip() + "…"
+
+
+def is_noise(text):
+    # Slash commands, command output, injected context and caveats are all
+    # wrapped in pseudo-XML tags; none of them is something the user typed.
+    t = text.lstrip()
+    return t == "" or t.startswith("<") or t.startswith("Caveat:") or t.startswith("# AGENTS.md")
+
+
+def text_of(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict) and part.get("type") in ("text", "input_text"):
+                return part.get("text") or ""
+    return ""
+
+
+def read_lines(path):
+    with open(path, "rb") as f:
+        for raw in f:
+            yield raw
+
+
+def loads(raw):
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return None
+
+
+# --------------------------------------------------------------- Claude Code
+
+
+class Claude:
+    id = "claude"
+    name = "Claude Code"
+    binary = "claude"
+
+    def __init__(self):
+        self.root = Path(os.environ.get("CLAUDE_CONFIG_DIR") or HOME / ".claude") / "projects"
+
+    def files(self):
+        # Top-level <project>/<uuid>.jsonl only; subagent transcripts live in
+        # <project>/<uuid>/subagents/ and are not resumable on their own.
+        if not self.root.is_dir():
+            return []
+        return [p for p in self.root.glob("*/*.jsonl") if p.is_file()]
+
+    def read(self, path):
+        sid = path.stem
+        cwd = branch = None
+        custom = ai = first = None
+        for raw in read_lines(path):
+            if cwd is None and b'"cwd"' in raw:
+                entry = loads(raw)
+                if entry and entry.get("cwd"):
+                    cwd = entry["cwd"]
+                    branch = entry.get("gitBranch")
+            if b'"custom-title"' in raw:
+                entry = loads(raw)
+                if entry and entry.get("type") == "custom-title" and entry.get("customTitle"):
+                    custom = entry["customTitle"]
+            elif b'"ai-title"' in raw:
+                entry = loads(raw)
+                if entry and entry.get("type") == "ai-title" and entry.get("aiTitle"):
+                    ai = entry["aiTitle"]
+            elif first is None and b'"type":"user"' in raw:
+                entry = loads(raw)
+                if entry and entry.get("type") == "user" and not entry.get("isMeta") and not entry.get("isSidechain"):
+                    text = text_of((entry.get("message") or {}).get("content"))
+                    if not is_noise(text):
+                        first = text
+        # A file with no real prompt is a cleared or aborted start: nothing to resume.
+        if first is None or not cwd:
+            return None
+        # Claude records "HEAD" outside a branch (detached, or not a repo).
+        branch = "" if not branch or branch == "HEAD" else branch
+        return {"id": sid, "cwd": cwd, "branch": branch, "title": one_line(custom or ai or first)}
+
+    def command(self, sid):
+        return [self.binary, "--resume", sid]
+
+
+# --------------------------------------------------------------------- Codex
+
+
+class Codex:
+    id = "codex"
+    name = "Codex"
+    binary = "codex"
+
+    def __init__(self):
+        self.home = Path(os.environ.get("CODEX_HOME") or HOME / ".codex")
+        self.root = self.home / "sessions"
+        self._names = None
+
+    def files(self):
+        if not self.root.is_dir():
+            return []
+        return [p for p in self.root.glob("*/*/*/rollout-*.jsonl") if p.is_file()]
+
+    def names(self):
+        # session_index.jsonl is append-only: the last thread_name per id wins.
+        if self._names is None:
+            self._names = {}
+            index = self.home / "session_index.jsonl"
+            if index.is_file():
+                for raw in read_lines(index):
+                    entry = loads(raw)
+                    if entry and entry.get("id") and entry.get("thread_name"):
+                        self._names[entry["id"]] = entry["thread_name"]
+        return self._names
+
+    def read(self, path):
+        meta = first = None
+        for raw in read_lines(path):
+            if meta is None:
+                entry = loads(raw)
+                if not entry or entry.get("type") != "session_meta":
+                    return None
+                meta = entry.get("payload") or {}
+                # `codex exec` runs are hidden from `codex resume` by default.
+                if meta.get("source") == "exec":
+                    return None
+                continue
+            if b'"role":"user"' in raw:
+                entry = loads(raw)
+                payload = (entry or {}).get("payload") or {}
+                if payload.get("type") == "message" and payload.get("role") == "user":
+                    text = text_of(payload.get("content"))
+                    if not is_noise(text):
+                        first = text
+                        break
+        if not meta or not meta.get("id") or not meta.get("cwd") or first is None:
+            return None
+        git = meta.get("git") or {}
+        # The title is resolved on every list (names can change without the
+        # rollout file changing), so only the fallback is cached.
+        return {"id": meta["id"], "cwd": meta["cwd"], "branch": git.get("branch") or "", "title": one_line(first)}
+
+    def title(self, session):
+        name = self.names().get(session["id"])
+        return one_line(name) if name else session["title"]
+
+    def command(self, sid):
+        return [self.binary, "resume", sid]
+
+
+AGENTS = {a.id: a for a in (Claude(), Codex())}
+
+
+# --------------------------------------------------------------------- cache
+
+
+def load_cache():
+    try:
+        with open(CACHE_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("version") == CACHE_VERSION and isinstance(data.get("files"), dict):
+            return data["files"]
+    except (OSError, ValueError):
+        pass
+    return {}
+
+
+def save_cache(files):
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=CACHE_DIR, prefix=".index.")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"version": CACHE_VERSION, "files": files}, f, ensure_ascii=False, separators=(",", ":"))
+        os.replace(tmp, CACHE_FILE)
+    except OSError:
+        pass  # a missing cache only costs speed
+
+
+# ------------------------------------------------------------------ commands
+
+
+def cmd_list(args):
+    limit = 0
+    if args[:1] == ["--limit"]:
+        if len(args) < 2 or not args[1].isdigit():
+            fail("--limit needs a number")
+        limit = int(args[1])
+
+    cache = load_cache()
+    fresh = {}
+    sessions = []
+    agents = []
+
+    for agent in AGENTS.values():
+        count = 0
+        for path in agent.files():
+            try:
+                st = path.stat()
+            except OSError:
+                continue
+            key = str(path)
+            hit = cache.get(key)
+            if hit and hit.get("mtime") == st.st_mtime_ns and hit.get("size") == st.st_size:
+                session = hit.get("session")
+            else:
+                try:
+                    session = agent.read(path)
+                except OSError:
+                    continue
+            fresh[key] = {"mtime": st.st_mtime_ns, "size": st.st_size, "session": session}
+            if not session:
+                continue
+            item = dict(session)
+            if hasattr(agent, "title"):
+                item["title"] = agent.title(session)
+            item["agent"] = agent.id
+            item["updated"] = int(st.st_mtime)
+            item["exists"] = os.path.isdir(session["cwd"])
+            sessions.append(item)
+            count += 1
+        agents.append({
+            "id": agent.id,
+            "name": agent.name,
+            "installed": shutil.which(agent.binary) is not None,
+            "count": count,
+        })
+
+    if fresh != cache:
+        save_cache(fresh)
+
+    sessions.sort(key=lambda s: s["updated"], reverse=True)
+    if limit:
+        sessions = sessions[:limit]
+    out({"ok": True, "home": str(HOME), "generated": int(time.time()), "agents": agents, "sessions": sessions})
+
+
+def cmd_open(args):
+    if len(args) != 3:
+        fail("usage: open <agent> <id> <cwd>")
+    agent_id, sid, cwd = args
+    agent = AGENTS.get(agent_id)
+    if not agent:
+        fail("Unknown agent: " + agent_id)
+    if not SESSION_ID.match(sid):
+        fail("Invalid session id")
+    if not os.path.isabs(cwd) or not os.path.isdir(cwd):
+        fail("Folder no longer exists: " + cwd)
+    if shutil.which(agent.binary) is None:
+        fail(agent.name + " is not installed (" + agent.binary + " not on PATH)")
+
+    # Same launch path as `omarchy agent`: one app-id for every agent window,
+    # so window rules and themes apply to resumed sessions too.
+    terminal = ["xdg-terminal-exec", "--app-id=org.omarchy.agent", "--dir=" + cwd, "-e"] + agent.command(sid)
+    if shutil.which("uwsm-app"):
+        terminal = ["uwsm-app", "--"] + terminal
+    try:
+        subprocess.Popen(terminal, cwd=cwd, start_new_session=True,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as e:
+        fail("Could not start a terminal: " + str(e))
+    out({"ok": True, "message": "Resuming in " + cwd})
+
+
+def main(argv):
+    if not argv:
+        fail("usage: omaisessions <list|open> ...")
+    commands = {"list": cmd_list, "open": cmd_open}
+    command = commands.get(argv[0])
+    if not command:
+        fail("Unknown command: " + argv[0])
+    command(argv[1:])
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

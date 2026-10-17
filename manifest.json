@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.ramoncardena.omaisessions",
+  "name": "omAiSessions",
+  "version": "0.1.0",
+  "author": "Ramon Cardena",
+  "license": "MIT",
+  "description": "Every Claude Code and Codex conversation on this computer in one bar panel: pick one and it resumes in a terminal in the right folder.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "AI Sessions",
+    "description": "Browse and resume coding-agent conversations from every folder.",
+    "category": "Productivity",
+    "defaultSection": "right",
+    "aliases": ["agents", "sessions", "claude", "codex", "ai"],
+    "allowMultiple": false,
+    "defaults": {
+      "maxSessions": 200
+    },
+    "schema": [
+      { "key": "maxSessions", "type": "integer", "label": "Sessions to show", "min": 20, "max": 2000, "step": 20, "defaultValue": 200 }
+    ]
+  }
+}
