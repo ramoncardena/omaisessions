@@ -10,7 +10,8 @@ import qs.Ui
 // object per command.
 //
 // The bar mounts one instance per monitor. Listing is cheap (the helper
-// caches by file mtime), so each instance refreshes on its own.
+// caches by file mtime), so each instance refreshes on its own: often while
+// the panel is open, rarely otherwise, to keep the running state current.
 BarWidget {
   id: root
   moduleName: "io.github.ramoncardena.omaisessions"
@@ -27,11 +28,14 @@ BarWidget {
   property string errorMessage: ""
   property double now: Date.now()
   property string opening: ""       // session id being launched
+  property string listKey: ""       // last list as JSON, to skip no-op updates
 
   readonly property bool busy: listProc.running || openProc.running
+  readonly property int runningCount: sessions.filter(function(s) { return s.running }).length
   readonly property string summary: !loaded ? "LOADING"
     : sessions.length === 0 ? "NO SESSIONS"
     : sessions.length + (sessions.length === 1 ? " SESSION" : " SESSIONS")
+      + (runningCount > 0 ? " · " + runningCount + " RUNNING" : "")
 
   function parse(text) {
     try { return JSON.parse(String(text || "")) } catch (e) { return null }
@@ -47,13 +51,20 @@ BarWidget {
   function openSession(session) {
     if (!session || openProc.running) return
     errorMessage = ""
-    statusMessage = "Resuming " + session.title + "…"
+    statusMessage = (session.running ? "Switching to " : "Resuming ") + session.title + "…"
     opening = session.id
     openProc.command = [helperPath, "open", session.agent, session.id, session.cwd]
     openProc.running = true
   }
 
   Component.onCompleted: Qt.callLater(refresh)
+
+  Timer {
+    interval: root.opened ? 5000 : 60000
+    running: true
+    repeat: true
+    onTriggered: root.refresh()
+  }
 
   Process {
     id: listProc
@@ -62,8 +73,14 @@ BarWidget {
       onStreamFinished: {
         var result = root.parse(text)
         if (result && result.ok) {
-          root.agents = result.agents || []
-          root.sessions = result.sessions || []
+          // Unchanged lists are dropped, so the periodic refresh doesn't
+          // rebuild the panel's list under the cursor.
+          var key = JSON.stringify([result.agents, result.sessions])
+          if (key !== root.listKey) {
+            root.listKey = key
+            root.agents = result.agents || []
+            root.sessions = result.sessions || []
+          }
           root.home = result.home || ""
           root.errorMessage = ""
         } else {
@@ -147,7 +164,10 @@ BarWidget {
     anchors.fill: parent
     bar: root.bar
     text: "󰚩"
-    tooltipText: root.loaded ? "AI sessions: " + root.sessions.length : "AI sessions"
+    tooltipText: !root.loaded ? "AI sessions"
+      : root.runningCount > 0 ? "AI sessions: " + root.runningCount + " running"
+      : "AI sessions: " + root.sessions.length
+    active: root.runningCount > 0
     onPressed: function(mouseButton) { root.toggle() }
   }
 }

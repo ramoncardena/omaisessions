@@ -6,7 +6,8 @@ Every command prints a single JSON object on stdout. Failures print
 message without parsing stderr.
 
   omaisessions list [--limit N]          every known session, newest first
-  omaisessions open <agent> <id> <cwd>   resume a session in a terminal in <cwd>
+  omaisessions open <agent> <id> <cwd>   resume a session in a terminal in <cwd>,
+                                         or focus its window if it is running
 
 Agents keep their history per folder, in their own internal formats, so each
 one gets a small reader below. Readers only extract what the panel shows
@@ -14,20 +15,24 @@ one gets a small reader below. Readers only extract what the panel shows
 a refresh only re-reads the files that changed.
 """
 
+import hashlib
 import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 HOME = Path.home()
 CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME") or HOME / ".cache") / "omaisessions"
 CACHE_FILE = CACHE_DIR / "index.json"
+PROC = Path(os.environ.get("OMAISESSIONS_PROC") or "/proc")
 
 # Session ids end up on a command line; only accept what the agents generate.
 SESSION_ID = re.compile(r"^[0-9A-Za-z][0-9A-Za-z_-]{7,63}$")
@@ -78,6 +83,76 @@ def loads(raw):
         return None
 
 
+def iso_epoch(value):
+    try:
+        return int(datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return None
+
+
+# ------------------------------------------------------------------ processes
+
+
+def proc_start(pid):
+    """Start time of a process in clock ticks since boot (field 22 of stat)."""
+    try:
+        stat = (PROC / str(pid) / "stat").read_text()
+        return stat[stat.rindex(")") + 2 :].split()[19]
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def alive(pid, start=None):
+    # A recorded start time guards against a recycled pid.
+    now = proc_start(pid)
+    return now is not None and (start is None or str(start) == now)
+
+
+def proc_argv(pid):
+    try:
+        return [a for a in (PROC / str(pid) / "cmdline").read_bytes().decode("utf-8", "replace").split("\0") if a]
+    except OSError:
+        return []
+
+
+def proc_fds(pid):
+    targets = []
+    try:
+        for fd in (PROC / str(pid) / "fd").iterdir():
+            try:
+                targets.append(os.readlink(fd))
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return targets
+
+
+def proc_parent(pid):
+    try:
+        stat = (PROC / str(pid) / "stat").read_text()
+        return int(stat[stat.rindex(")") + 2 :].split()[1])
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
+def is_program_path(arg):
+    # Only a program path identifies a process. Matching words anywhere in
+    # argv would also catch a shell whose script merely mentions an agent.
+    return arg != "" and not any(c.isspace() for c in arg)
+
+
+def program_is(argv, name):
+    return bool(argv) and is_program_path(argv[0]) and os.path.basename(argv[0]) == name
+
+
+def all_pids():
+    me = os.getpid()
+    for entry in PROC.iterdir():
+        if entry.name.isdigit() and int(entry.name) != me:
+            yield int(entry.name)
+
+
 # --------------------------------------------------------------- Claude Code
 
 
@@ -87,7 +162,8 @@ class Claude:
     binary = "claude"
 
     def __init__(self):
-        self.root = Path(os.environ.get("CLAUDE_CONFIG_DIR") or HOME / ".claude") / "projects"
+        self.config = Path(os.environ.get("CLAUDE_CONFIG_DIR") or HOME / ".claude")
+        self.root = self.config / "projects"
 
     def files(self):
         # Top-level <project>/<uuid>.jsonl only; subagent transcripts live in
@@ -126,6 +202,19 @@ class Claude:
         # Claude records "HEAD" outside a branch (detached, or not a repo).
         branch = "" if not branch or branch == "HEAD" else branch
         return {"id": sid, "cwd": cwd, "branch": branch, "title": one_line(custom or ai or first)}
+
+    def running(self):
+        # Every interactive claude writes sessions/<pid>.json with the session
+        # it is on, kept current across /clear and /resume.
+        found = {}
+        for f in (self.config / "sessions").glob("*.json"):
+            entry = loads(f.read_bytes()) if f.is_file() else None
+            if entry and entry.get("sessionId") and alive(entry.get("pid", 0), entry.get("procStart")):
+                found[entry["sessionId"]] = int(entry["pid"])
+        return found
+
+    def matches(self, argv):
+        return program_is(argv, "claude")
 
     def command(self, sid):
         return [self.binary, "--resume", sid]
@@ -192,11 +281,280 @@ class Codex:
         name = self.names().get(session["id"])
         return one_line(name) if name else session["title"]
 
+    def running(self):
+        return {}  # no registry; found through open files (see find_running)
+
+    def matches(self, argv):
+        return program_is(argv, "codex")
+
     def command(self, sid):
         return [self.binary, "resume", sid]
 
 
-AGENTS = {a.id: a for a in (Claude(), Codex())}
+# ---------------------------------------------------------------------- Grok
+
+
+class Grok:
+    id = "grok"
+    name = "Grok"
+    binary = "grok"
+
+    def __init__(self):
+        self.home = Path(os.environ.get("GROK_HOME") or HOME / ".grok")
+        self.root = self.home / "sessions"
+
+    def files(self):
+        # sessions/<url-encoded cwd>/<id>/summary.json; subagents nest deeper.
+        if not self.root.is_dir():
+            return []
+        return [p for p in self.root.glob("*/*/summary.json") if p.is_file()]
+
+    def first_prompt(self, folder, sid):
+        history = folder / "prompt_history.jsonl"
+        if history.is_file():
+            for raw in read_lines(history):
+                if sid.encode() in raw:
+                    entry = loads(raw)
+                    if entry and entry.get("session_id") == sid and not entry.get("is_bash") and not is_noise(entry.get("prompt") or ""):
+                        return entry["prompt"]
+        # Older sessions predate prompt_history: what was typed is the
+        # <user_query> inside a user message, after the injected context.
+        chat = folder / sid / "chat_history.jsonl"
+        if chat.is_file():
+            for raw in read_lines(chat):
+                if b"<user_query>" in raw:
+                    entry = loads(raw)
+                    if entry and entry.get("type") == "user":
+                        m = re.search(r"<user_query>\s*(.*?)\s*(?:</user_query>|$)", text_of(entry.get("content")), re.S)
+                        if m and m.group(1):
+                            return m.group(1)
+        return None
+
+    def read(self, path):
+        summary = loads(path.read_bytes()) or {}
+        info = summary.get("info") or {}
+        sid = info.get("id") or path.parent.name
+        cwd = info.get("cwd")
+        if not cwd or not summary.get("num_chat_messages", 1):
+            return None
+        title = (summary.get("title") or summary.get("generated_title") or summary.get("session_summary")
+                 or self.first_prompt(path.parent.parent, sid))
+        if not title:
+            return None
+        session = {"id": sid, "cwd": cwd, "branch": "", "title": one_line(title)}
+        updated = iso_epoch(summary.get("last_active_at") or summary.get("updated_at") or "")
+        if updated:
+            session["updated"] = updated
+        return session
+
+    def running(self):
+        found = {}
+        entries = loads((self.home / "active_sessions.json").read_bytes()) if (self.home / "active_sessions.json").is_file() else None
+        for entry in entries if isinstance(entries, list) else []:
+            if entry.get("session_id") and alive(entry.get("pid", 0), entry.get("pid_start")):
+                found[entry["session_id"]] = int(entry["pid"])
+        return found
+
+    def matches(self, argv):
+        # The launcher execs a versioned binary (grok-1.0.62); Grok Bot is a
+        # different app and must not count.
+        return program_is(argv, "grok") or (bool(argv) and re.fullmatch(r"grok-[0-9][0-9.]*", os.path.basename(argv[0])) is not None)
+
+    def command(self, sid):
+        return [self.binary, "--resume", sid]
+
+
+# ---------------------------------------------------------------- Cursor CLI
+
+
+# Absolute paths inside Cursor's blobs (protobuf or JSON): candidates for the
+# chat's folder, confirmed against the md5 in the chat's directory name.
+PATH_IN_BLOB = re.compile(rb"/(?:[^\x00-\x20\"'<>\\]+)")
+
+
+def md5_path(path):
+    return hashlib.md5(path.encode("utf-8", "surrogateescape")).hexdigest()
+
+
+class Cursor:
+    id = "cursor"
+    name = "Cursor"
+    binary = "cursor-agent"
+
+    def roots(self):
+        # Same lookup as cursor-agent: CURSOR_CONFIG_DIR, else
+        # $XDG_CONFIG_HOME/cursor, else ~/.cursor. The bar may not share the
+        # terminal's XDG_CONFIG_HOME, so both defaults are checked.
+        dirs = []
+        if os.environ.get("CURSOR_CONFIG_DIR", "").strip():
+            dirs.append(Path(os.environ["CURSOR_CONFIG_DIR"]))
+        dirs += [Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "cursor", HOME / ".config" / "cursor", HOME / ".cursor"]
+        seen, result = set(), []
+        for d in dirs:
+            chats = d / "chats"
+            if chats.is_dir() and chats.resolve() not in seen:
+                seen.add(chats.resolve())
+                result.append(chats)
+        return result
+
+    def files(self):
+        # chats/<md5 of the folder>/<chat id>/store.db
+        return [p for root in self.roots() for p in root.glob("*/*/store.db") if p.is_file()]
+
+    def read(self, path):
+        folder_hash = path.parent.parent.name
+        try:
+            db = sqlite3.connect("file:" + str(path) + "?mode=ro", uri=True, timeout=1)
+        except sqlite3.Error:
+            return None
+        try:
+            row = db.execute("SELECT value FROM meta WHERE key = '0'").fetchone()
+            meta = loads(bytes.fromhex(row[0])) if row and row[0] else None
+            meta = meta if isinstance(meta, dict) else {}
+            cwd = first = None
+            for (data,) in db.execute("SELECT data FROM blobs"):
+                if not isinstance(data, bytes):
+                    continue
+                if cwd is None:
+                    for m in PATH_IN_BLOB.finditer(data):
+                        cwd = self.match_folder(m.group().decode("utf-8", "replace"), folder_hash)
+                        if cwd:
+                            break
+                if first is None and b'"role":"user"' in data:
+                    first = self.user_text(data)
+                if cwd and first:
+                    break
+        except (sqlite3.Error, ValueError):
+            return None
+        finally:
+            db.close()
+        name = meta.get("name") if meta.get("name") not in (None, "", "New Agent", "New Chat") else None
+        title = name or first
+        if not title:
+            return None
+        # cwd stays None when no blob names it; resolve_cursor_folders fills it.
+        return {"id": path.parent.name, "cwd": cwd, "branch": "", "title": one_line(title), "folderHash": folder_hash}
+
+    @staticmethod
+    def match_folder(path, folder_hash):
+        # The folder, or a file inside it: walk up until the md5 matches.
+        p = path.rstrip("/.,;:)")
+        while p and p != "/":
+            if md5_path(p) == folder_hash:
+                return p
+            p = os.path.dirname(p)
+        return None
+
+    @staticmethod
+    def user_text(data):
+        message = loads(data)
+        if not isinstance(message, dict) or message.get("role") != "user":
+            return None
+        text = text_of(message.get("content"))
+        # The CLI wraps what you typed in <user_query> after injected context.
+        m = re.search(r"<user_query>\s*(.*?)\s*</user_query>", text, re.S)
+        if m:
+            text = m.group(1)
+        return None if is_noise(text) else text
+
+    def running(self):
+        return {}  # found through the open store.db (see find_running)
+
+    def matches(self, argv):
+        # The CLI runs as `node <install>/cursor-agent/<version>/.../index.js`.
+        return program_is(argv, "cursor-agent") or (
+            len(argv) > 1 and is_program_path(argv[1]) and "/cursor-agent/" in argv[1] and argv[1].endswith(".js"))
+
+    def command(self, sid):
+        return [self.binary, "--resume", sid]
+
+
+AGENTS = {a.id: a for a in (Claude(), Codex(), Grok(), Cursor())}
+
+
+def resolve_cursor_folders(sessions, known, cache_paths):
+    """Fill in Cursor folders that their blobs didn't reveal.
+
+    Cursor names a chat's directory after the md5 of its folder, so any folder
+    that hashes the same is the answer: try every folder the other agents
+    know about, then the home directory a few levels deep.
+    """
+    pending = [s for s in sessions if s["agent"] == "cursor" and not s.get("cwd")]
+    if not pending:
+        return
+    def candidates():
+        yield from cache_paths.values()
+        yield from known
+        yield str(HOME)
+        for top, dirs, _ in os.walk(HOME):
+            depth = top[len(str(HOME)):].count(os.sep)
+            dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ("node_modules", "target", "venv")]
+            if depth >= 3:
+                dirs[:] = []
+            yield top
+    want = {s["folderHash"] for s in pending}
+    for path in candidates():
+        h = md5_path(path)
+        if h in want:
+            cache_paths[h] = path
+            want.discard(h)
+            if not want:
+                break
+    for s in pending:
+        s["cwd"] = cache_paths.get(s["folderHash"])
+
+
+def find_running(sessions):
+    """Map (agent, session id) -> pid for every session that is open right now.
+
+    Claude and Grok keep a registry of live sessions. For the others, a live
+    agent process either has the session's file open, names the session id
+    on its command line (`codex resume <id>`), or, failing both, is taken to
+    be on the newest session in its folder that it has written to.
+    """
+    running = {}
+    for agent in AGENTS.values():
+        for sid, pid in agent.running().items():
+            running[(agent.id, sid)] = pid
+
+    by_path = {s["_path"]: s for s in sessions}
+    dirs = {os.path.dirname(p): s for p, s in by_path.items() if s["agent"] in ("cursor", "grok")}
+    ids = {(s["agent"], s["id"]) for s in sessions}
+    claimed = {pid for pid in running.values()}
+    tick = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+    boot = time.time() - float((PROC / "uptime").read_text().split()[0]) if (PROC / "uptime").exists() else 0
+
+    for pid in all_pids():
+        argv = proc_argv(pid)
+        agent = next((a for a in AGENTS.values() if a.matches(argv)), None)
+        if not agent or agent.id in ("claude", "grok") or pid in claimed:
+            continue
+        hit = None
+        for arg in argv[1:]:
+            if (agent.id, arg) in ids:
+                hit = arg
+        if hit is None:
+            for target in proc_fds(pid):
+                s = by_path.get(target) or dirs.get(os.path.dirname(target))
+                if s and s["agent"] == agent.id:
+                    hit = s["id"]
+                    break
+        if hit is None:
+            # Fall back to the folder: the newest session there that changed
+            # since this process started.
+            try:
+                cwd = os.readlink(PROC / str(pid) / "cwd")
+            except OSError:
+                continue
+            start = proc_start(pid)
+            started = boot + int(start) / tick if start and boot else 0
+            for s in sessions:  # newest first
+                if s["agent"] == agent.id and s["cwd"] == cwd and s["updated"] >= started - 5:
+                    hit = s["id"]
+                    break
+        if hit is not None and (agent.id, hit) not in running:
+            running[(agent.id, hit)] = pid
+    return running
 
 
 # --------------------------------------------------------------------- cache
@@ -207,24 +565,101 @@ def load_cache():
         with open(CACHE_FILE, encoding="utf-8") as f:
             data = json.load(f)
         if data.get("version") == CACHE_VERSION and isinstance(data.get("files"), dict):
-            return data["files"]
+            return data["files"], data.get("paths") if isinstance(data.get("paths"), dict) else {}
     except (OSError, ValueError):
         pass
-    return {}
+    return {}, {}
 
 
-def save_cache(files):
+def save_cache(files, paths):
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=CACHE_DIR, prefix=".index.")
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"version": CACHE_VERSION, "files": files}, f, ensure_ascii=False, separators=(",", ":"))
+            json.dump({"version": CACHE_VERSION, "files": files, "paths": paths}, f, ensure_ascii=False, separators=(",", ":"))
         os.replace(tmp, CACHE_FILE)
     except OSError:
         pass  # a missing cache only costs speed
 
 
+def stamp(path):
+    # SQLite in WAL mode writes to <db>-wal first; include it so a Cursor
+    # chat counts as changed before its checkpoint.
+    mtime = size = 0
+    for p in (path, Path(str(path) + "-wal")):
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        mtime, size = max(mtime, st.st_mtime_ns), size + st.st_size
+    return mtime, size
+
+
 # ------------------------------------------------------------------ commands
+
+
+def collect():
+    cache, paths = load_cache()
+    fresh = {}
+    sessions = []
+    agents = []
+
+    for agent in AGENTS.values():
+        for path in agent.files():
+            mtime, size = stamp(path)
+            if not mtime:
+                continue
+            key = str(path)
+            hit = cache.get(key)
+            if hit and hit.get("mtime") == mtime and hit.get("size") == size:
+                session = hit.get("session")
+            else:
+                try:
+                    session = agent.read(path)
+                except OSError:
+                    continue
+            fresh[key] = {"mtime": mtime, "size": size, "session": session}
+            if not session:
+                continue
+            item = dict(session)
+            if hasattr(agent, "title"):
+                item["title"] = agent.title(session)
+            item["agent"] = agent.id
+            item["updated"] = int(session.get("updated") or mtime / 1e9)
+            item["_path"] = key
+            sessions.append(item)
+
+    known = {s["cwd"] for s in sessions if s.get("cwd")}
+    cached_paths = dict(paths)
+    resolve_cursor_folders(sessions, known, paths)
+    sessions = [s for s in sessions if s.get("cwd")]
+    sessions.sort(key=lambda s: s["updated"], reverse=True)
+
+    if fresh != cache or paths != cached_paths:
+        save_cache(fresh, paths)
+
+    running = find_running(sessions)
+    for s in sessions:
+        pid = running.get((s["agent"], s["id"]))
+        s["running"] = pid is not None
+        if pid:
+            s["pid"] = pid
+        s["exists"] = os.path.isdir(s["cwd"])
+
+    for agent in AGENTS.values():
+        mine = [s for s in sessions if s["agent"] == agent.id]
+        agents.append({
+            "id": agent.id,
+            "name": agent.name,
+            "installed": shutil.which(agent.binary) is not None,
+            "count": len(mine),
+            "running": sum(1 for s in mine if s["running"]),
+        })
+    return agents, sessions
+
+
+def public(session):
+    return {k: v for k, v in session.items() if not k.startswith("_") and k != "folderHash"}
 
 
 def cmd_list(args):
@@ -233,53 +668,40 @@ def cmd_list(args):
         if len(args) < 2 or not args[1].isdigit():
             fail("--limit needs a number")
         limit = int(args[1])
-
-    cache = load_cache()
-    fresh = {}
-    sessions = []
-    agents = []
-
-    for agent in AGENTS.values():
-        count = 0
-        for path in agent.files():
-            try:
-                st = path.stat()
-            except OSError:
-                continue
-            key = str(path)
-            hit = cache.get(key)
-            if hit and hit.get("mtime") == st.st_mtime_ns and hit.get("size") == st.st_size:
-                session = hit.get("session")
-            else:
-                try:
-                    session = agent.read(path)
-                except OSError:
-                    continue
-            fresh[key] = {"mtime": st.st_mtime_ns, "size": st.st_size, "session": session}
-            if not session:
-                continue
-            item = dict(session)
-            if hasattr(agent, "title"):
-                item["title"] = agent.title(session)
-            item["agent"] = agent.id
-            item["updated"] = int(st.st_mtime)
-            item["exists"] = os.path.isdir(session["cwd"])
-            sessions.append(item)
-            count += 1
-        agents.append({
-            "id": agent.id,
-            "name": agent.name,
-            "installed": shutil.which(agent.binary) is not None,
-            "count": count,
-        })
-
-    if fresh != cache:
-        save_cache(fresh)
-
-    sessions.sort(key=lambda s: s["updated"], reverse=True)
+    agents, sessions = collect()
     if limit:
         sessions = sessions[:limit]
-    out({"ok": True, "home": str(HOME), "generated": int(time.time()), "agents": agents, "sessions": sessions})
+    out({"ok": True, "home": str(HOME), "generated": int(time.time()), "agents": agents,
+         "sessions": [public(s) for s in sessions]})
+
+
+def window_for(pid):
+    """Hyprland window address of the terminal an agent runs in, if any."""
+    try:
+        clients = json.loads(subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, text=True, timeout=3).stdout or "[]")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    windows = {c.get("pid"): c.get("address") for c in clients if c.get("address")}
+    seen = set()
+    while pid > 1 and pid not in seen:
+        if pid in windows:
+            return windows[pid]
+        seen.add(pid)
+        pid = proc_parent(pid)
+    return None
+
+
+def focus(address):
+    # Lua dispatch on current Hyprland; the classic dispatcher otherwise.
+    for cmd in (["hyprctl", "dispatch", 'hl.dsp.focus({ window = "address:%s" })' % address],
+                ["hyprctl", "dispatch", "focuswindow", "address:" + address]):
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if r.returncode == 0 and "error" not in (r.stdout + r.stderr).lower():
+            return True
+    return False
 
 
 def cmd_open(args):
@@ -291,6 +713,17 @@ def cmd_open(args):
         fail("Unknown agent: " + agent_id)
     if not SESSION_ID.match(sid):
         fail("Invalid session id")
+
+    # Two agents writing one session corrupts it: a running session gets its
+    # window focused instead of a second copy.
+    _, sessions = collect()
+    current = next((s for s in sessions if s["agent"] == agent_id and s["id"] == sid), None)
+    if current and current["running"]:
+        address = window_for(current["pid"])
+        if address and focus(address):
+            out({"ok": True, "focused": True, "message": "Switched to the running session"})
+        fail("Already running in another terminal (pid %d) and its window can't be found" % current["pid"])
+
     if not os.path.isabs(cwd) or not os.path.isdir(cwd):
         fail("Folder no longer exists: " + cwd)
     if shutil.which(agent.binary) is None:

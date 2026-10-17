@@ -24,7 +24,7 @@ Panel {
 
   // Until BarWidget.qml injects itself, bind against an inert stand-in.
   readonly property var host: hostWidget || ({
-    agents: [], sessions: [], home: "", loaded: false, busy: false, opening: "",
+    agents: [], sessions: [], home: "", loaded: false, busy: false, opening: "", runningCount: 0,
     statusMessage: "", errorMessage: "", now: 0, summary: "", maxSessions: 200
   })
 
@@ -35,9 +35,11 @@ Panel {
   property string tab: "all"
   property int cursorIndex: 0
 
-  // "All" plus one tab per agent that has sessions on this computer.
+  // "All", "Running" while anything runs, and one tab per agent that has
+  // sessions on this computer.
   readonly property var tabs: {
     var list = [{ value: "all", label: "All" }]
+    if (root.host.runningCount > 0) list.push({ value: "running", label: "Running " + root.host.runningCount })
     for (var i = 0; i < root.host.agents.length; i++) {
       var a = root.host.agents[i]
       if (a.count > 0) list.push({ value: a.id, label: a.name })
@@ -82,9 +84,27 @@ Panel {
     keyCatcher.forceActiveFocus()
   }
 
+  // The selected session, by identity: a refresh can reorder the list (a
+  // running session moves up as it works), and the cursor follows it.
+  property string selectedKey: ""
+  function keyOf(s) { return s ? s.agent + "/" + s.id : "" }
+
   onTabChanged: cursorIndex = 0
-  onVisibleSessionsChanged: cursorIndex = Math.min(cursorIndex, Math.max(0, visibleSessions.length - 1))
-  onCursorIndexChanged: sessionList.positionViewAtIndex(cursorIndex, ListView.Contain)
+  // The Running tab disappears when the last session ends.
+  onTabsChanged: if (!tabs.some(function(t) { return t.value === root.tab })) tab = "all"
+  onVisibleSessionsChanged: {
+    var found = -1
+    for (var i = 0; i < visibleSessions.length && found < 0; i++)
+      if (keyOf(visibleSessions[i]) === selectedKey) found = i
+    cursorIndex = found >= 0 ? found : Math.min(cursorIndex, Math.max(0, visibleSessions.length - 1))
+    selectedKey = keyOf(visibleSessions[cursorIndex])
+    // A new model resets the scroll position; bring the cursor back into view.
+    Qt.callLater(function() { sessionList.positionViewAtIndex(root.cursorIndex, ListView.Contain) })
+  }
+  onCursorIndexChanged: {
+    selectedKey = keyOf(visibleSessions[cursorIndex])
+    sessionList.positionViewAtIndex(cursorIndex, ListView.Contain)
+  }
 
   onOpenedChanged: {
     if (opened) {
@@ -192,7 +212,7 @@ Panel {
           visible: root.host.loaded && root.visibleSessions.length === 0
           width: parent.width
           text: searchField.text.trim() !== "" ? "No sessions match \"" + searchField.text.trim() + "\"."
-            : "No sessions yet. Start Claude Code or Codex in any folder and they show up here."
+            : "No sessions yet. Start Claude Code, Codex, Grok or Cursor in any folder and they show up here."
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.body
@@ -221,7 +241,7 @@ Panel {
         Text {
           width: parent.width
           textFormat: Text.PlainText
-          text: "↑↓ select · ←→ agent · Enter resume · / search"
+          text: "↑↓ select · ←→ tab · Enter resume or switch · / search"
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
@@ -259,23 +279,36 @@ Panel {
       anchors.rightMargin: Style.space(10)
       spacing: Style.space(1)
 
-      Text {
+      RowLayout {
         Layout.fillWidth: true
-        textFormat: Text.PlainText
-        text: root.host.opening === row.session.id ? "Resuming…" : row.session.title
-        color: root.foreground
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.body
-        elide: Text.ElideRight
+        spacing: Style.space(6)
+        Text {
+          visible: row.session.running === true
+          textFormat: Text.PlainText
+          text: "●"
+          color: Color.accent
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          Layout.alignment: Qt.AlignVCenter
+        }
+        Text {
+          Layout.fillWidth: true
+          textFormat: Text.PlainText
+          text: root.host.opening === row.session.id ? (row.session.running ? "Switching…" : "Resuming…") : row.session.title
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+          elide: Text.ElideRight
+        }
       }
       Text {
         Layout.fillWidth: true
         textFormat: Text.PlainText
-        text: (root.tab === "all" ? Model.agentShortName(row.session.agent) + " · " : "")
+        text: (root.tab === "all" || root.tab === "running" ? Model.agentShortName(row.session.agent) + " · " : "")
           + Model.shortPath(row.session.cwd, root.host.home)
           + (row.session.branch ? " (" + row.session.branch + ")" : "")
           + (row.missing ? " · folder missing" : "")
-          + " · " + Model.relativeTime(row.session.updated, root.host.now)
+          + " · " + (row.session.running ? "running" : Model.relativeTime(row.session.updated, root.host.now))
         color: row.missing ? Color.urgent : root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption

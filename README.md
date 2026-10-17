@@ -2,7 +2,7 @@
 
 Every coding-agent conversation on this computer, in one Omarchy bar panel.
 
-Claude Code and Codex keep their history per folder: to resume a
+Claude Code, Codex, Grok and Cursor keep their history per folder: to resume a
 conversation you have to remember where you started it and launch the agent
 there. omAiSessions lists them all, from every folder, newest first. Pick one
 and it opens a terminal in that conversation's folder with the agent already
@@ -10,9 +10,14 @@ resuming it.
 
 ## Features
 
-- One tab per agent (Claude Code, Codex), plus an **All** tab
+- One tab per agent (Claude Code, Codex, Grok, Cursor), plus **All** and
+  **Running** tabs
+- Sessions that are open right now are marked, and the bar icon lights up
+  while any agent is running. Picking a running session switches to its
+  window instead of opening a second copy (two copies writing one session
+  would corrupt it)
 - Titles from the agent's own naming (`/rename`, AI titles, Codex thread
-  names), falling back to your first prompt
+  names, Grok and Cursor titles), falling back to your first prompt
 - Folder, git branch and last activity for each session; sessions whose folder
   was deleted are flagged
 - Search across titles and folders
@@ -24,7 +29,7 @@ resuming it.
 |---|---|
 | `↑` `↓` / `j` `k` | Select a session |
 | `←` `→` / `h` `l`, `1`–`9` | Switch agent tab |
-| `Enter` | Resume in a terminal |
+| `Enter` | Resume in a terminal, or switch to it if it's running |
 | `/` | Search (Esc clears, ↓ back to the list) |
 | `r` | Refresh |
 | `Esc` | Close |
@@ -47,10 +52,18 @@ tests/run.sh           # helper tests against fixture histories
 `bin/omaisessions` (Python, standard library only) reads each agent's history
 and prints JSON for the panel:
 
-| Agent | History | Resume |
-|---|---|---|
-| Claude Code | `~/.claude/projects/*/<id>.jsonl` (or `$CLAUDE_CONFIG_DIR`) | `claude --resume <id>` |
-| Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (or `$CODEX_HOME`) | `codex resume <id>` |
+| Agent | History | Resume | Running |
+|---|---|---|---|
+| Claude Code | `~/.claude/projects/*/<id>.jsonl` (or `$CLAUDE_CONFIG_DIR`) | `claude --resume <id>` | `~/.claude/sessions/<pid>.json` |
+| Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (or `$CODEX_HOME`) | `codex resume <id>` | process with the rollout open |
+| Grok | `~/.grok/sessions/<folder>/<id>/summary.json` (or `$GROK_HOME`) | `grok --resume <id>` | `~/.grok/active_sessions.json` |
+| Cursor | `~/.cursor/chats/<md5 of folder>/<id>/store.db` (or `$CURSOR_CONFIG_DIR`) | `cursor-agent --resume <id>` | process with the store open |
+
+Cursor names each chat's directory after an md5 of its folder, so the folder
+is recovered by matching that hash: against paths inside the chat, then the
+folders other agents know about, then your home directory a few levels deep.
+Registry entries are checked against the live process (pid and start time),
+so a crashed agent never shows as running.
 
 It only reads history; it never changes it. Results are cached in
 `~/.cache/omaisessions/` by file mtime, so a refresh only re-reads files that

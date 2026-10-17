@@ -28,18 +28,20 @@ function agentShortName(id) {
   switch (id) {
     case "claude": return "Claude"
     case "codex": return "Codex"
+    case "grok": return "Grok"
+    case "cursor": return "Cursor"
     default: return String(id || "")
   }
 }
 
-// Sessions for one tab ("all" or an agent id), narrowed by a free-text query
-// that matches the title or the folder.
+// Sessions for one tab ("all", "running" or an agent id), narrowed by a
+// free-text query that matches the title or the folder.
 function filter(sessions, tab, query, limit) {
   var q = String(query || "").trim().toLowerCase()
   var result = []
   for (var i = 0; i < sessions.length && result.length < limit; i++) {
     var s = sessions[i]
-    if (tab !== "all" && s.agent !== tab) continue
+    if (tab === "running" ? !s.running : tab !== "all" && s.agent !== tab) continue
     if (q !== "" && String(s.title).toLowerCase().indexOf(q) < 0 && String(s.cwd).toLowerCase().indexOf(q) < 0) continue
     result.push(s)
   }

@@ -11,7 +11,7 @@ T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 
 export HOME="$T/home" XDG_CACHE_HOME="$T/cache"
-export CLAUDE_CONFIG_DIR="$HOME/.claude" CODEX_HOME="$HOME/.codex"
+export CLAUDE_CONFIG_DIR="$HOME/.claude" CODEX_HOME="$HOME/.codex" GROK_HOME="$HOME/.grok" CURSOR_CONFIG_DIR="$HOME/.cursor"
 mkdir -p "$HOME/Projects/app" "$HOME/Projects/my-app" "$T/stub"
 
 # Stub terminal and agents: record the command line, launch nothing.
@@ -19,7 +19,7 @@ cat >"$T/stub/xdg-terminal-exec" <<STUB
 #!/bin/bash
 printf '%s\n' "\$PWD" "\$@" >"$T/launched"
 STUB
-printf '#!/bin/bash\n' >"$T/stub/claude"; printf '#!/bin/bash\n' >"$T/stub/codex"
+for a in claude codex grok cursor-agent; do printf '#!/bin/bash\n' >"$T/stub/$a"; done
 chmod +x "$T/stub/"*
 export PATH="$T/stub:/usr/bin"
 
@@ -79,9 +79,57 @@ cat >"$CODEX_HOME/session_index.jsonl" <<JSON
 {"id":"bbbbbbbb-0000-0000-0000-000000000001","thread_name":"Dark mode toggle"}
 JSON
 
+# ---- Grok fixtures: sessions/<url-encoded cwd>/<id>/summary.json.
+G="$GROK_HOME/sessions/$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$HOME/Projects/app")"
+mkdir -p "$G/cccccccc-0000-0000-0000-000000000001" "$G/cccccccc-0000-0000-0000-000000000002" "$G/cccccccc-0000-0000-0000-000000000003/subagents/x"
+cat >"$G/cccccccc-0000-0000-0000-000000000001/summary.json" <<JSON
+{"info":{"id":"cccccccc-0000-0000-0000-000000000001","cwd":"$HOME/Projects/app"},"generated_title":"Grok titled","num_chat_messages":4,"last_active_at":"2026-10-13T05:56:14.431001912Z"}
+JSON
+cat >"$G/cccccccc-0000-0000-0000-000000000002/summary.json" <<JSON
+{"info":{"id":"cccccccc-0000-0000-0000-000000000002","cwd":"$HOME/Projects/app"},"session_summary":"","num_chat_messages":3}
+JSON
+cat >"$G/cccccccc-0000-0000-0000-000000000002/chat_history.jsonl" <<JSON
+{"type":"system","content":"You are Grok"}
+{"type":"user","content":[{"type":"text","text":"<user_info>Workspace Path: /x</user_info>"}]}
+{"type":"user","content":[{"type":"text","text":"<user_query>\nTidy the README\n</user_query>"}]}
+JSON
+# Opened, never prompted: nothing to resume.
+cat >"$G/cccccccc-0000-0000-0000-000000000003/summary.json" <<JSON
+{"info":{"id":"cccccccc-0000-0000-0000-000000000003","cwd":"$HOME/Projects/app"},"num_chat_messages":0}
+JSON
+echo '{"info":{"id":"sub","cwd":"/x"},"generated_title":"sub"}' >"$G/cccccccc-0000-0000-0000-000000000003/subagents/x/summary.json"
+
+# ---- Cursor fixtures: chats/<md5 of folder>/<id>/store.db, metadata as
+# hex-encoded JSON under meta key "0".
+mkdir -p "$HOME/Projects/deep/one"
+python3 - "$CURSOR_CONFIG_DIR/chats" "$HOME" <<'PY'
+import hashlib, json, os, sqlite3, sys
+chats, home = sys.argv[1], sys.argv[2]
+def chat(folder, cid, meta, blobs):
+    d = os.path.join(chats, hashlib.md5(folder.encode()).hexdigest(), cid)
+    os.makedirs(d)
+    db = sqlite3.connect(os.path.join(d, "store.db"))
+    db.executescript("CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB); CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);")
+    db.execute("INSERT INTO meta VALUES ('0', ?)", (json.dumps(meta).encode().hex(),))
+    for i, b in enumerate(blobs):
+        db.execute("INSERT INTO blobs VALUES (?, ?)", (str(i), b))
+    db.commit(); db.close()
+app = home + "/Projects/app"
+# Folder named in a blob; untitled, so the typed query is the title.
+chat(app, "dddddddd-0000-0000-0000-000000000001", {"agentId": "x", "name": "New Agent"}, [
+    b"\x0a\x10binary\x00junk",
+    json.dumps({"role": "user", "content": "<user_info>Workspace Path: " + app + "</user_info>\n<user_query>Refactor the parser</user_query>"}, separators=(",", ":")).encode()])
+# No path in any blob: found through another agent's folder.
+chat(home + "/Projects/my-app", "dddddddd-0000-0000-0000-000000000002", {"name": "Named chat"}, [b"\x00\x01"])
+# Only the home walk can find this one.
+chat(home + "/Projects/deep/one", "dddddddd-0000-0000-0000-000000000003", {"name": "Deep chat"}, [])
+# Never prompted and untitled: skipped.
+chat(app, "dddddddd-0000-0000-0000-000000000004", {"name": "New Agent"}, [])
+PY
+
 out=$(list)
 check "list succeeds" test "$(jq -r .ok <<<"$out")" = true
-check "finds resumable sessions only" test "$(jq '.sessions | length' <<<"$out")" = 4
+check "finds resumable sessions only" test "$(jq '.sessions | length' <<<"$out")" = 9
 check "skips subagent transcripts" test -z "$(jq -r '.sessions[] | select(.cwd == "/x") | .id' <<<"$out")"
 check "skips cleared-only claude sessions" test -z "$(field aaaaaaaa-0000-0000-0000-000000000002 id)"
 check "skips codex exec runs" test -z "$(field bbbbbbbb-0000-0000-0000-000000000002 id)"
@@ -96,9 +144,88 @@ check "missing folder flagged" test "$(field aaaaaaaa-0000-0000-0000-00000000000
 check "existing folder flagged" test "$(field aaaaaaaa-0000-0000-0000-000000000001 exists)" = true
 check "codex title from session index" test "$(field bbbbbbbb-0000-0000-0000-000000000001 title)" = "Dark mode toggle"
 check "codex branch from git meta" test "$(field bbbbbbbb-0000-0000-0000-000000000001 branch)" = dev
-check "sorted newest first" test "$(jq -r '.sessions[-1].id' <<<"$out")" = aaaaaaaa-0000-0000-0000-000000000003
-check "agent counts" test "$(jq -c '[.agents[] | [.id, .count, .installed]]' <<<"$out")" = '[["claude",3,true],["codex",1,true]]'
+check "sorted newest first" test "$(jq -r '.sessions[-1].id' <<<"$out")" = cccccccc-0000-0000-0000-000000000001
+check "agent counts" test "$(jq -c '[.agents[] | [.id, .count, .installed]]' <<<"$out")" = '[["claude",3,true],["codex",1,true],["grok",2,true],["cursor",3,true]]'
 check "limit" test "$("$HELPER" list --limit 2 | jq '.sessions | length')" = 2
+
+check "grok title from summary" test "$(field cccccccc-0000-0000-0000-000000000001 title)" = "Grok titled"
+check "grok time from summary" test "$(field cccccccc-0000-0000-0000-000000000001 updated)" = "$(date -d 2026-10-13T05:56:14Z +%s)"
+check "grok falls back to the user query" test "$(field cccccccc-0000-0000-0000-000000000002 title)" = "Tidy the README"
+check "grok skips unprompted sessions" test -z "$(field cccccccc-0000-0000-0000-000000000003 id)"
+check "grok skips subagents" test -z "$(field sub id)"
+check "cursor folder from a blob" test "$(field dddddddd-0000-0000-0000-000000000001 cwd)" = "$HOME/Projects/app"
+check "cursor title from the user query" test "$(field dddddddd-0000-0000-0000-000000000001 title)" = "Refactor the parser"
+check "cursor folder from another agent" test "$(field dddddddd-0000-0000-0000-000000000002 cwd)" = "$HOME/Projects/my-app"
+check "cursor name from metadata" test "$(field dddddddd-0000-0000-0000-000000000002 title)" = "Named chat"
+check "cursor folder from the home walk" test "$(field dddddddd-0000-0000-0000-000000000003 cwd)" = "$HOME/Projects/deep/one"
+check "cursor skips untitled empty chats" test -z "$(field dddddddd-0000-0000-0000-000000000004 id)"
+check "cursor folders are cached" test "$(jq '.paths | length' "$XDG_CACHE_HOME/omaisessions/index.json")" -ge 1
+check "nothing running yet" test "$(list | jq '[.sessions[] | select(.running)] | length')" = 0
+
+# ---- Running sessions, simulated by stand-in processes named after the
+# agents (exec -a) that hold the session files open like the real ones do.
+pids=()
+spawn() { "$@" & pids+=($!); }
+trap 'kill "${pids[@]}" 2>/dev/null; rm -rf "$T"' EXIT
+start_of() { awk '{print $22}' "/proc/$1/stat"; }
+mkdir -p "$CLAUDE_CONFIG_DIR/sessions"
+spawn bash -c 'exec -a claude sleep 300'; cp=$!
+spawn bash -c "exec 3<'$X/rollout-2026-10-12T10-00-00-bbbbbbbb-0000-0000-0000-000000000001.jsonl'; exec -a codex sleep 300"
+spawn bash -c "exec 3<'$(dirname "$(ls "$CURSOR_CONFIG_DIR"/chats/*/dddddddd-0000-0000-0000-000000000003/store.db)")/store.db'; exec -a cursor-agent sleep 300"
+spawn bash -c 'exec -a grok sleep 300'; gp=$!
+sleep 0.3
+echo "{\"pid\":$cp,\"sessionId\":\"aaaaaaaa-0000-0000-0000-000000000001\",\"cwd\":\"$HOME/Projects/my-app\",\"procStart\":\"$(start_of $cp)\"}" >"$CLAUDE_CONFIG_DIR/sessions/$cp.json"
+echo '{"pid":999999,"sessionId":"aaaaaaaa-0000-0000-0000-000000000004","procStart":"1"}' >"$CLAUDE_CONFIG_DIR/sessions/999999.json"
+echo "{\"pid\":$cp,\"sessionId\":\"aaaaaaaa-0000-0000-0000-000000000003\",\"procStart\":\"1\"}" >"$CLAUDE_CONFIG_DIR/sessions/recycled.json"
+echo "[{\"session_id\":\"cccccccc-0000-0000-0000-000000000002\",\"pid\":$gp,\"pid_start\":$(start_of $gp)}]" >"$GROK_HOME/active_sessions.json"
+out=$(list)
+run() { jq -r --arg id "$1" '.sessions[] | select(.id == $id) | .running' <<<"$out"; }
+check "claude running from its registry" test "$(run aaaaaaaa-0000-0000-0000-000000000001)" = true
+check "claude registry pid matches" test "$(jq -r '.sessions[] | select(.id == "aaaaaaaa-0000-0000-0000-000000000001") | .pid' <<<"$out")" = "$cp"
+check "dead registry entry is not running" test "$(run aaaaaaaa-0000-0000-0000-000000000004)" = false
+check "recycled pid is not running" test "$(run aaaaaaaa-0000-0000-0000-000000000003)" = false
+check "grok running from active_sessions" test "$(run cccccccc-0000-0000-0000-000000000002)" = true
+check "codex running from its open rollout" test "$(run bbbbbbbb-0000-0000-0000-000000000001)" = true
+check "cursor running from its open store" test "$(run dddddddd-0000-0000-0000-000000000003)" = true
+check "others are not running" test "$(jq '[.sessions[] | select(.running)] | length' <<<"$out")" = 4
+check "agent running counts" test "$(jq -c '[.agents[] | .running]' <<<"$out")" = '[1,1,1,1]'
+
+# Codex named on its command line (`codex resume <id>`), no open file.
+kill "${pids[@]}" 2>/dev/null; pids=(); sleep 0.2
+spawn bash -c 'exec -a codex python3 -c "import time; time.sleep(300)" resume bbbbbbbb-0000-0000-0000-000000000001'
+sleep 0.3
+check "codex running from its argv" test "$(field bbbbbbbb-0000-0000-0000-000000000001 running)" = true
+kill "${pids[@]}" 2>/dev/null; pids=(); sleep 0.2
+# A fresh codex in a folder: the session there written since it started.
+spawn bash -c "cd '$HOME/Projects/app' && exec -a codex sleep 300"
+sleep 1.2; touch "$X/rollout-2026-10-12T10-00-00-bbbbbbbb-0000-0000-0000-000000000001.jsonl"
+check "codex running from its folder" test "$(field bbbbbbbb-0000-0000-0000-000000000001 running)" = true
+
+kill "${pids[@]}" 2>/dev/null; pids=(); sleep 0.2
+# A shell whose script merely mentions an agent is not that agent.
+spawn bash -c "cd '$HOME/Projects/deep/one' && sleep 300; : cursor-agent /x/cursor-agent/1/index.js codex"
+sleep 1.2; touch "$(ls "$CURSOR_CONFIG_DIR"/chats/*/dddddddd-0000-0000-0000-000000000003/store.db)"
+check "decoy shell is not an agent" test "$(field dddddddd-0000-0000-0000-000000000003 running)" = false
+spawn bash -c "cd '$HOME/Projects/deep/one' && exec -a cursor-agent sleep 300"
+sleep 1.2; touch "$(ls "$CURSOR_CONFIG_DIR"/chats/*/dddddddd-0000-0000-0000-000000000003/store.db)"
+check "cursor running from its folder" test "$(field dddddddd-0000-0000-0000-000000000003 running)" = true
+spawn bash -c 'cd / && exec -a codex python3 -c "import time; time.sleep(300)" resume bbbbbbbb-0000-0000-0000-000000000001'
+sleep 0.3
+
+# Opening a running session focuses its window instead of a second copy.
+cat >"$T/stub/hyprctl" <<STUB
+#!/bin/bash
+if [[ \$1 == clients ]]; then echo '[{"pid":$$,"address":"0xfeed"}]'; else echo "\$*" >>"$T/focused"; echo ok; fi
+STUB
+chmod +x "$T/stub/hyprctl"; rm -f "$T/launched"
+out=$("$HELPER" open codex bbbbbbbb-0000-0000-0000-000000000001 "$HOME/Projects/app")
+check "running session is focused" test "$(jq -r .focused <<<"$out")" = true
+check "focus targets the terminal window" grep -q 'address:0xfeed' "$T/focused"
+check "no second copy is launched" test ! -e "$T/launched"
+printf '#!/bin/bash\necho "[]"\n' >"$T/stub/hyprctl"
+check "running without a window explains" bash -c "'$HELPER' open codex bbbbbbbb-0000-0000-0000-000000000001 '$HOME/Projects/app' | jq -e '.error | test(\"Already running\")' >/dev/null"
+kill "${pids[@]}" 2>/dev/null; pids=(); sleep 0.2
+rm -f "$CLAUDE_CONFIG_DIR"/sessions/*.json "$GROK_HOME/active_sessions.json"
 
 # Codex fallback title when the index has no name.
 : >"$CODEX_HOME/session_index.jsonl"
@@ -119,7 +246,7 @@ echo '{not json' >>"$f"
 check "bad lines are skipped" test "$(field aaaaaaaa-0000-0000-0000-000000000001 title)" = "Renamed later"
 
 # No history at all.
-check "empty home lists nothing" test "$(HOME="$T/empty" CLAUDE_CONFIG_DIR="$T/empty/.claude" CODEX_HOME="$T/empty/.codex" "$HELPER" list | jq '.sessions | length')" = 0
+check "empty home lists nothing" test "$(HOME="$T/empty" CLAUDE_CONFIG_DIR="$T/empty/.claude" CODEX_HOME="$T/empty/.codex" GROK_HOME="$T/empty/.grok" CURSOR_CONFIG_DIR="$T/empty/.cursor" "$HELPER" list | jq '.sessions | length')" = 0
 
 # Opening.
 out=$("$HELPER" open claude aaaaaaaa-0000-0000-0000-000000000001 "$HOME/Projects/my-app")
@@ -130,6 +257,12 @@ check "claude resume command" test "$(tail -n +2 "$T/launched" | tr '\n' ' ')" =
 rm -f "$T/launched"
 "$HELPER" open codex bbbbbbbb-0000-0000-0000-000000000001 "$HOME/Projects/app" >/dev/null; sleep 0.3
 check "codex resume command" test "$(tail -n 4 "$T/launched" | tr '\n' ' ')" = "-e codex resume bbbbbbbb-0000-0000-0000-000000000001 "
+rm -f "$T/launched"
+"$HELPER" open grok cccccccc-0000-0000-0000-000000000001 "$HOME/Projects/app" >/dev/null; sleep 0.3
+check "grok resume command" test "$(tail -n 4 "$T/launched" | tr '\n' ' ')" = "-e grok --resume cccccccc-0000-0000-0000-000000000001 "
+rm -f "$T/launched"
+"$HELPER" open cursor dddddddd-0000-0000-0000-000000000001 "$HOME/Projects/app" >/dev/null; sleep 0.3
+check "cursor resume command" test "$(tail -n 4 "$T/launched" | tr '\n' ' ')" = "-e cursor-agent --resume dddddddd-0000-0000-0000-000000000001 "
 check "open rejects a missing folder" bash -c "! '$HELPER' open claude aaaaaaaa-0000-0000-0000-000000000003 '$HOME/gone' >/dev/null"
 check "open rejects relative folders" bash -c "! '$HELPER' open claude aaaaaaaa-0000-0000-0000-000000000001 Projects >/dev/null"
 check "open rejects option-like ids" bash -c "! '$HELPER' open claude --dangerously-skip-permissions '$HOME' >/dev/null"
