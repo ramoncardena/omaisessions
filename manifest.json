@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.ramoncardena.omaisessions",
   "name": "omAiSessions",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": "Ramon Cardena",
   "license": "MIT",
   "description": "Every Claude Code, Codex, Grok and Cursor conversation on this computer in one bar panel: see what is running, and pick one to resume it in the right folder.",

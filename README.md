@@ -55,7 +55,7 @@ and prints JSON for the panel:
 | Agent | History | Resume | Running |
 |---|---|---|---|
 | Claude Code | `~/.claude/projects/*/<id>.jsonl` (or `$CLAUDE_CONFIG_DIR`) | `claude --resume <id>` | `~/.claude/sessions/<pid>.json` |
-| Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (or `$CODEX_HOME`) | `codex resume <id>` | process with the rollout open |
+| Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (or `$CODEX_HOME`) | `codex resume <id>` | `thread-writer-locks/<id>.lock` held by `codex app-server` |
 | Grok | `~/.grok/sessions/<folder>/<id>/summary.json` (or `$GROK_HOME`) | `grok --resume <id>` | `~/.grok/active_sessions.json` |
 | Cursor | `~/.cursor/chats/<md5 of folder>/<id>/store.db` (or `$CURSOR_CONFIG_DIR`) | `cursor-agent --resume <id>` | process with the store open |
 
@@ -63,7 +63,9 @@ Cursor names each chat's directory after an md5 of its folder, so the folder
 is recovered by matching that hash: against paths inside the chat, then the
 folders other agents know about, then your home directory a few levels deep.
 Registry entries are checked against the live process (pid and start time),
-so a crashed agent never shows as running.
+so a crashed agent never shows as running. A session you just started has no
+history until its first prompt, so there is nothing to resume yet; while it
+runs it is listed as "New session", so you can still switch to its window.
 
 It only reads history; it never changes it. Results are cached in
 `~/.cache/omaisessions/` by file mtime, so a refresh only re-reads files that

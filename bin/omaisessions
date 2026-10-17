@@ -210,7 +210,7 @@ class Claude:
         for f in (self.config / "sessions").glob("*.json"):
             entry = loads(f.read_bytes()) if f.is_file() else None
             if entry and entry.get("sessionId") and alive(entry.get("pid", 0), entry.get("procStart")):
-                found[entry["sessionId"]] = int(entry["pid"])
+                found[entry["sessionId"]] = (int(entry["pid"]), entry.get("cwd"))
         return found
 
     def matches(self, argv):
@@ -284,6 +284,15 @@ class Codex:
     def running(self):
         return {}  # no registry; found through open files (see find_running)
 
+    def session_for_fd(self, target):
+        # Current Codex runs sessions in a `codex app-server` child, which
+        # holds thread-writer-locks/<id>.lock for each live session, even
+        # before the first prompt creates its rollout file.
+        if os.path.dirname(target) == str(self.home / "thread-writer-locks") and target.endswith(".lock"):
+            sid = os.path.basename(target)[: -len(".lock")]
+            return sid if SESSION_ID.match(sid) else None
+        return None
+
     def matches(self, argv):
         return program_is(argv, "codex")
 
@@ -352,7 +361,7 @@ class Grok:
         entries = loads((self.home / "active_sessions.json").read_bytes()) if (self.home / "active_sessions.json").is_file() else None
         for entry in entries if isinstance(entries, list) else []:
             if entry.get("session_id") and alive(entry.get("pid", 0), entry.get("pid_start")):
-                found[entry["session_id"]] = int(entry["pid"])
+                found[entry["session_id"]] = (int(entry["pid"]), entry.get("cwd"))
         return found
 
     def matches(self, argv):
@@ -505,56 +514,106 @@ def resolve_cursor_folders(sessions, known, cache_paths):
 
 
 def find_running(sessions):
-    """Map (agent, session id) -> pid for every session that is open right now.
+    """Map (agent, session id) -> (pid, cwd) for every session open right now.
 
-    Claude and Grok keep a registry of live sessions. For the others, a live
-    agent process either has the session's file open, names the session id
-    on its command line (`codex resume <id>`), or, failing both, is taken to
-    be on the newest session in its folder that it has written to.
+    Claude and Grok keep a registry of live sessions, and Codex a lock file
+    per live session. Otherwise a live agent process either has the
+    session's file open, names the session id on its command line (`codex
+    resume <id>`), or, failing both, is taken to be on the newest session in
+    its folder that it has written to. The cwd is only known for sessions
+    found through a registry or lock; it places a session that has no
+    history yet.
     """
     running = {}
     for agent in AGENTS.values():
-        for sid, pid in agent.running().items():
-            running[(agent.id, sid)] = pid
+        for sid, (pid, cwd) in agent.running().items():
+            running[(agent.id, sid)] = (pid, cwd)
 
     by_path = {s["_path"]: s for s in sessions}
     dirs = {os.path.dirname(p): s for p, s in by_path.items() if s["agent"] in ("cursor", "grok")}
     ids = {(s["agent"], s["id"]) for s in sessions}
-    claimed = {pid for pid in running.values()}
+    claimed = {pid for pid, _ in running.values()}
     tick = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
     boot = time.time() - float((PROC / "uptime").read_text().split()[0]) if (PROC / "uptime").exists() else 0
 
+    procs = {}
     for pid in all_pids():
         argv = proc_argv(pid)
         agent = next((a for a in AGENTS.values() if a.matches(argv)), None)
-        if not agent or agent.id in ("claude", "grok") or pid in claimed:
-            continue
+        if agent and agent.id not in ("claude", "grok") and pid not in claimed:
+            procs[pid] = (agent, argv)
+
+    def family(pid):
+        # The outermost process of the same agent: the TUI, for its helpers.
+        agent = procs[pid][0]
+        while proc_parent(pid) in procs and procs[proc_parent(pid)][0] is agent:
+            pid = proc_parent(pid)
+        return pid
+
+    def cwd_of(pid):
+        try:
+            return os.readlink(PROC / str(pid) / "cwd")
+        except OSError:
+            return None
+
+    found = set()  # families already placed on a session
+    fallback = []
+    for pid, (agent, argv) in procs.items():
         hit = None
         for arg in argv[1:]:
             if (agent.id, arg) in ids:
                 hit = arg
+        if hit is not None:
+            found.add(family(pid))
+            running.setdefault((agent.id, hit), (pid, None))
+            continue
+        fds = proc_fds(pid)
+        # One app-server can host several sessions, each with its own lock.
+        locked = [sid for sid in (agent.session_for_fd(t) if hasattr(agent, "session_for_fd") else None for t in fds) if sid]
+        if locked:
+            found.add(family(pid))
+            cwd = cwd_of(family(pid))
+            for sid in locked:
+                running.setdefault((agent.id, sid), (pid, cwd))
+            continue
+        for target in fds:
+            s = by_path.get(target) or dirs.get(os.path.dirname(target))
+            if s and s["agent"] == agent.id:
+                hit = s["id"]
+                break
         if hit is None:
-            for target in proc_fds(pid):
-                s = by_path.get(target) or dirs.get(os.path.dirname(target))
-                if s and s["agent"] == agent.id:
-                    hit = s["id"]
-                    break
-        if hit is None:
-            # Fall back to the folder: the newest session there that changed
-            # since this process started.
-            try:
-                cwd = os.readlink(PROC / str(pid) / "cwd")
-            except OSError:
-                continue
-            start = proc_start(pid)
-            started = boot + int(start) / tick if start and boot else 0
-            for s in sessions:  # newest first
-                if s["agent"] == agent.id and s["cwd"] == cwd and s["updated"] >= started - 5:
-                    hit = s["id"]
-                    break
-        if hit is not None and (agent.id, hit) not in running:
-            running[(agent.id, hit)] = pid
+            fallback.append(pid)
+        else:
+            found.add(family(pid))
+            running.setdefault((agent.id, hit), (pid, None))
+
+    for pid in fallback:
+        # A helper of a process that is already placed (Codex's app-server
+        # and its updater) is not a session of its own.
+        if family(pid) in found:
+            continue
+        agent = procs[pid][0]
+        # Fall back to the folder: the newest session there that changed
+        # since this process started.
+        cwd = cwd_of(pid)
+        start = proc_start(pid)
+        started = boot + int(start) / tick if start and boot else 0
+        for s in sessions:  # newest first
+            if s["agent"] == agent.id and s["cwd"] == cwd and s["updated"] >= started - 5:
+                if (agent.id, s["id"]) not in running:
+                    running[(agent.id, s["id"])] = (pid, None)
+                    found.add(family(pid))
+                break
     return running
+
+
+def started_at(pid):
+    tick = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+    try:
+        boot = time.time() - float((PROC / "uptime").read_text().split()[0])
+        return int(boot + int(proc_start(pid)) / tick)
+    except (OSError, ValueError, TypeError):
+        return int(time.time())
 
 
 # --------------------------------------------------------------------- cache
@@ -639,11 +698,20 @@ def collect():
         save_cache(fresh, paths)
 
     running = find_running(sessions)
+    listed = {(s["agent"], s["id"]) for s in sessions}
     for s in sessions:
-        pid = running.get((s["agent"], s["id"]))
+        pid, _ = running.get((s["agent"], s["id"]), (None, None))
         s["running"] = pid is not None
         if pid:
             s["pid"] = pid
+    # A running session with no history yet (no prompt sent) has nothing to
+    # resume, but it is open in a window that can be switched to.
+    for (agent_id, sid), (pid, cwd) in running.items():
+        if (agent_id, sid) not in listed and cwd:
+            sessions.append({"id": sid, "cwd": cwd, "branch": "", "title": "New session", "new": True,
+                             "agent": agent_id, "updated": started_at(pid), "running": True, "pid": pid})
+    sessions.sort(key=lambda s: s["updated"], reverse=True)
+    for s in sessions:
         s["exists"] = os.path.isdir(s["cwd"])
 
     for agent in AGENTS.values():
@@ -718,7 +786,9 @@ def cmd_open(args):
     # window focused instead of a second copy.
     _, sessions = collect()
     current = next((s for s in sessions if s["agent"] == agent_id and s["id"] == sid), None)
-    if current and current["running"]:
+    if current is None:
+        fail("That session is gone: it ended before its first prompt, or its history was deleted")
+    if current["running"]:
         address = window_for(current["pid"])
         if address and focus(address):
             out({"ok": True, "focused": True, "message": "Switched to the running session"})
