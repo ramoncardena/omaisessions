@@ -6,6 +6,10 @@
   records, a window address must be hex before it reaches Hyprland's Lua
   dispatch, and the README documents everything the plugin reads, writes
   and runs
+- Deep security review: one malformed history file or registry no longer
+  breaks the whole list; running detection only considers your own
+  processes; session ids are matched exactly (no trailing newline); folders
+  with control characters are never handed to the terminal
 - New icon: a robot head whose antenna is a return arrow
   (`assets/icon.svg`), so it no longer looks like the built-in Agents widget
 - OpenCode sessions, read from its database (`opencode.db`); resume with

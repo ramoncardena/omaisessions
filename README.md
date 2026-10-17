@@ -90,7 +90,8 @@ everything omAiSessions touches, so you can check it before enabling it.
   first prompts and folders are extracted. OpenCode's database also holds its
   login tokens; only its `session`, `message` and `part` tables are queried,
   read-only.
-- `/proc`, to tell which sessions are running: each process's command line,
+- `/proc`, to tell which sessions are running: for your own processes only,
+  each one's command line,
   working folder, start time and open file paths. For `codex` processes only,
   the environment is read to find `CODEX_HOME` (it can hold API keys; only
   `CODEX_HOME` and `HOME` are used, and nothing from it is kept or shown).
@@ -109,8 +110,15 @@ everything omAiSessions touches, so you can check it before enabling it.
 
 Every command is an argument list, never a shell string. Session ids must
 match a strict pattern before they reach a command line, a session opens in
-the folder its own history records, and titles are shown as plain text.
-There is no network access.
+the folder its own history records (never one with control characters in
+its name), and titles are shown as plain text. A history file in a shape the
+readers don't expect skips that session instead of breaking the list. There
+is no network access.
+
+Resuming runs the agent in the session's folder, so that folder's project
+settings apply, exactly as when you resume it by hand; each agent's own
+folder-trust prompts still apply. Titles can be written by the agent's model
+from what it read, so treat them as labels, not as trusted text.
 
 **Dependencies:** `python3` (standard library only), `xdg-terminal-exec`,
 `hyprctl`; all ship with Omarchy.

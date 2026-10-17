@@ -347,6 +347,18 @@ check "corrupt cache is ignored" test "$(list | jq -r .ok)" = true
 echo '{not json' >>"$f"
 check "bad lines are skipped" test "$(field aaaaaaaa-0000-0000-0000-000000000001 title)" = "Renamed later"
 
+# Files in shapes a reader doesn't expect (a new format, a truncated write)
+# skip that session, never the whole list.
+echo '["cwd"]' >"$C/aaaaaaaa-0000-0000-0000-00000000000a.jsonl"
+printf '{"cwd":"/tmp","type":"user","x":%s}\n' "$(python3 -c "print('['*100000 + ']'*100000)")" >"$C/aaaaaaaa-0000-0000-0000-00000000000b.jsonl"
+mkdir -p "$G/cccccccc-0000-0000-0000-00000000000a"; echo '[1]' >"$G/cccccccc-0000-0000-0000-00000000000a/summary.json"
+echo '{"type":"session_meta","payload":[1]}' >"$X/rollout-2026-10-12T11-00-00-odd.jsonl"
+echo '[1]' >"$CLAUDE_CONFIG_DIR/sessions/odd.json"; echo '[1, "x"]' >"$GROK_HOME/active_sessions.json"
+out=$(list)
+check "odd files never break the list" test "$(jq -r .ok <<<"$out")" = true
+check "odd files leave the other sessions" test "$(jq -r '.sessions[] | select(.id == "aaaaaaaa-0000-0000-0000-000000000001") | .title' <<<"$out")" = "Renamed later"
+rm -rf "$C/aaaaaaaa-0000-0000-0000-00000000000"[ab].jsonl "$G/cccccccc-0000-0000-0000-00000000000a" "$X/rollout-2026-10-12T11-00-00-odd.jsonl" "$CLAUDE_CONFIG_DIR/sessions/odd.json" "$GROK_HOME/active_sessions.json"
+
 # No history at all.
 check "empty home lists nothing" test "$(HOME="$T/empty" XDG_DATA_HOME="$T/empty/.local/share" CLAUDE_CONFIG_DIR="$T/empty/.claude" CODEX_HOME="$T/empty/.codex" GROK_HOME="$T/empty/.grok" CURSOR_CONFIG_DIR="$T/empty/.cursor" "$HELPER" list | jq '.sessions | length')" = 0
 
@@ -370,6 +382,13 @@ rm -f "$T/launched"
 check "opencode resume command" test "$(tail -n 4 "$T/launched" | tr '\n' ' ')" = "-e opencode --session ses_titled0000000001 "
 check "open rejects a missing folder" bash -c "! '$HELPER' open claude aaaaaaaa-0000-0000-0000-000000000003 '$HOME/gone' >/dev/null"
 check "open uses the session's own folder" bash -c "'$HELPER' open claude aaaaaaaa-0000-0000-0000-000000000001 '$HOME/Projects/app' | jq -e '.error | test(\"not where this session\")' >/dev/null"
+check "open rejects an id with a trailing newline" bash -c "! '$HELPER' open claude \$'aaaaaaaa-0000-0000-0000-000000000001\\n' '$HOME/Projects/my-app' >/dev/null"
+# A folder name with a newline: xdg-terminal-exec would cut it at the newline.
+odd="$HOME/Projects/odd"$'\n'"dir"; mkdir -p "$odd"
+python3 -c 'import json,sys; print(json.dumps({"type":"user","cwd":sys.argv[1],"message":{"role":"user","content":"odd folder"}}, separators=(",", ":")))' "$odd" >"$C/aaaaaaaa-0000-0000-0000-00000000000c.jsonl"
+out=$("$HELPER" open claude aaaaaaaa-0000-0000-0000-00000000000c "$odd")
+check "open refuses folders with control characters" jq -e '.error | test("control characters")' <<<"$out"
+rm -rf "$odd" "$C/aaaaaaaa-0000-0000-0000-00000000000c.jsonl"
 check "open rejects relative folders" bash -c "! '$HELPER' open claude aaaaaaaa-0000-0000-0000-000000000001 Projects >/dev/null"
 check "open rejects option-like ids" bash -c "! '$HELPER' open claude --dangerously-skip-permissions '$HOME' >/dev/null"
 check "open rejects unknown agents" bash -c "! '$HELPER' open rm aaaaaaaa-0000-0000-0000-000000000001 '$HOME' >/dev/null"

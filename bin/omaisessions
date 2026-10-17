@@ -35,7 +35,7 @@ CACHE_FILE = CACHE_DIR / "index.json"
 PROC = Path(os.environ.get("OMAISESSIONS_PROC") or "/proc")
 
 # Session ids end up on a command line; only accept what the agents generate.
-SESSION_ID = re.compile(r"^[0-9A-Za-z][0-9A-Za-z_-]{7,63}$")
+SESSION_ID = re.compile(r"[0-9A-Za-z][0-9A-Za-z_-]{7,63}")
 TITLE_LIMIT = 120
 
 
@@ -147,9 +147,17 @@ def program_is(argv, name):
 
 
 def all_pids():
-    me = os.getpid()
+    # Only your own processes: another account's process named after an
+    # agent, with your session id in its arguments, must not mark that
+    # session running (and so block resuming it).
+    me, uid = os.getpid(), os.getuid()
     for entry in PROC.iterdir():
         if entry.name.isdigit() and int(entry.name) != me:
+            try:
+                if entry.stat().st_uid != uid:
+                    continue
+            except OSError:
+                continue
             yield int(entry.name)
 
 
@@ -290,7 +298,7 @@ class Codex:
         # before the first prompt creates its rollout file.
         if os.path.dirname(target) == str(self.home / "thread-writer-locks") and target.endswith(".lock"):
             sid = os.path.basename(target)[: -len(".lock")]
-            return sid if SESSION_ID.match(sid) else None
+            return sid if SESSION_ID.fullmatch(sid) else None
         return None
 
     def owns(self, pid):
@@ -613,7 +621,11 @@ def find_running(sessions):
     """
     running = {}
     for agent in AGENTS.values():
-        for sid, (pid, cwd) in agent.running().items():
+        try:
+            found = agent.running()
+        except (OSError, ValueError, TypeError, AttributeError, KeyError, RecursionError):
+            found = {}  # a malformed registry hides that agent's running state only
+        for sid, (pid, cwd) in found.items():
             running[(agent.id, sid)] = (pid, cwd)
 
     # An open file only identifies a session when it holds just that one,
@@ -770,10 +782,14 @@ def collect():
             if hit and hit.get("mtime") == mtime and hit.get("size") == size:
                 session = hit.get("session")
             else:
+                # A file an agent wrote in an unexpected shape (a new format,
+                # a truncated write) skips that session, never the list.
                 try:
                     session = agent.read(path)
-                except OSError:
+                except (OSError, sqlite3.Error):
                     continue
+                except (ValueError, TypeError, AttributeError, KeyError, IndexError, RecursionError):
+                    session = None
             fresh[key] = {"mtime": mtime, "size": size, "session": session}
             # Most agents keep one file per session; OpenCode keeps them all
             # in one database, whose reader returns a list.
@@ -880,7 +896,7 @@ def cmd_open(args):
     agent = AGENTS.get(agent_id)
     if not agent:
         fail("Unknown agent: " + agent_id)
-    if not SESSION_ID.match(sid):
+    if not SESSION_ID.fullmatch(sid):
         fail("Invalid session id")
 
     # Two agents writing one session corrupts it: a running session gets its
@@ -898,6 +914,10 @@ def cmd_open(args):
             out({"ok": True, "focused": True, "message": "Switched to the running session"})
         fail("Already running in another terminal (pid %d) and its window can't be found" % current["pid"])
 
+    # xdg-terminal-exec reads --dir= up to the first newline: a folder name
+    # with control characters could open the terminal somewhere else.
+    if any(ord(c) < 32 or ord(c) == 127 for c in cwd):
+        fail("This session's folder name has control characters; resume it by hand")
     if not os.path.isabs(cwd) or not os.path.isdir(cwd):
         fail("Folder no longer exists: " + cwd)
     if shutil.which(agent.binary) is None:
@@ -923,7 +943,11 @@ def main(argv):
     command = commands.get(argv[0])
     if not command:
         fail("Unknown command: " + argv[0])
-    command(argv[1:])
+    try:
+        command(argv[1:])
+    except (OSError, ValueError, TypeError, AttributeError, KeyError, IndexError, RecursionError, sqlite3.Error) as e:
+        # The panel can only show a JSON reply; a traceback would blank it.
+        fail("Internal error (%s): %s" % (type(e).__name__, e))
 
 
 if __name__ == "__main__":
