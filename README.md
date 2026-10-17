@@ -24,6 +24,8 @@ resuming it.
   session
 - Picking a running session switches to its window instead of opening a
   second copy (two copies writing one session would corrupt it)
+- Start a new session (`n`): pick any folder an agent has worked in, or type
+  a path, and an installed agent (the one you used there last, by default)
 - Titles from the agent's own naming (`/rename`, AI titles, Codex thread
   names, Grok, Cursor and OpenCode titles), falling back to your first prompt
 - Folder, git branch and last activity for each session; sessions whose folder
@@ -40,6 +42,7 @@ resuming it.
 | `Enter` | Resume in a terminal, or switch to it if it's running |
 | `/` | Search (Esc clears, ↓ back to the list) |
 | `r` | Refresh |
+| `n` | New session: `↑↓` folder, `←→` agent, `/` filter or type a path, `Enter` start |
 | `s` | Settings (refresh interval, notifications, sessions shown) |
 | `Esc` | Close |
 
@@ -140,7 +143,8 @@ Agent history is never modified.
 
 **Runs**
 - Your terminal via `xdg-terminal-exec` (through `uwsm-app` when present),
-  with the agent's own resume command, when you pick a session.
+  with the agent's own resume command when you pick a session, or the bare
+  agent command when you start a new one (in a folder that must exist).
 - `hyprctl`, to find and focus a running session's window.
 - `omarchy-notification-send` (or `notify-send` elsewhere), when an agent
   starts waiting on you, if enabled. Its click action is

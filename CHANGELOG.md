@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- New session view (`n` or +): every folder an agent has worked in, last used
+  first, or a path you type; starts an installed agent there, by default the
+  one you used in that folder last
 - Bar icon drawn at the font icons' size and line weight: it filled the
   whole 16 px canvas and sat 2 px past the other icons at top and bottom
 

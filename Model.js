@@ -81,3 +81,25 @@ function filter(sessions, tab, query, limit) {
   }
   return result
 }
+
+// Folders to start a new session in, narrowed by the query. A query that is
+// a path (~/x or /x) not in the list is offered too, after the folders it
+// matches; the helper checks that it exists.
+function folderChoices(folders, query, home) {
+  var q = String(query || "").trim()
+  var lower = q.toLowerCase()
+  var result = []
+  var asPath = q.charAt(0) === "~" ? String(home || "") + q.slice(1) : q
+  var typed = q.charAt(0) === "/" || q === "~" || q.indexOf("~/") === 0
+  var exact = asPath.replace(/\/+$/, "") || "/"   // the folder the path names
+  for (var i = 0; i < folders.length; i++) {
+    var f = folders[i]
+    if (lower !== "" && !typed && f.path.toLowerCase().indexOf(lower) < 0 && shortPath(f.path, home).toLowerCase().indexOf(lower) < 0) continue
+    if (typed && f.path !== exact && f.path.indexOf(asPath) !== 0) continue
+    result.push(f)
+  }
+  // Known folders that match come first while you're still typing.
+  if (typed && !result.some(function(f) { return f.path === exact }))
+    result.push({ path: exact, typed: true })
+  return result
+}

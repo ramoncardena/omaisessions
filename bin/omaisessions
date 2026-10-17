@@ -11,6 +11,7 @@ message without parsing stderr.
                                          start waiting on you
   omaisessions open <agent> <id> <cwd>   resume a session in a terminal in <cwd>,
                                          or focus its window if it is running
+  omaisessions new <agent> <folder>      start a new session in <folder>
 
 Agents keep their history per folder, in their own internal formats, so each
 one gets a small reader below. Readers only extract what the panel shows
@@ -1032,6 +1033,20 @@ def notify_waiting(sessions):
         os.close(lock)
 
 
+def folders_of(sessions, limit=200):
+    """Every folder an agent has worked in, last used first, with the agent
+    used there last: the choices for starting a new session."""
+    folders = {}
+    for s in sessions:  # newest first
+        f = folders.get(s["cwd"])
+        if f is None:
+            folders[s["cwd"]] = {"path": s["cwd"], "updated": s["updated"], "lastAgent": s["agent"],
+                                 "sessions": 1, "exists": s["exists"]}
+        else:
+            f["sessions"] += 1
+    return [f for f in folders.values() if f["exists"]][:limit]
+
+
 def cmd_list(args):
     limit, notify = 0, False
     rest = list(args)
@@ -1049,7 +1064,7 @@ def cmd_list(args):
     if limit:
         sessions = sessions[:limit]
     out({"ok": True, "home": str(HOME), "generated": int(time.time()), "agents": agents,
-         "sessions": [public(s) for s in sessions]})
+         "folders": folders_of(sessions), "sessions": [public(s) for s in sessions]})
 
 
 def window_for(pid):
@@ -1109,18 +1124,23 @@ def cmd_open(args):
             out({"ok": True, "focused": True, "message": "Switched to the running session"})
         fail("Already running in another terminal (pid %d) and its window can't be found" % current["pid"])
 
+    launch(agent, cwd, agent.command(sid), "Resuming in ")
+
+
+def launch(agent, cwd, command, verb):
+    """Open a terminal in cwd running command, then report and exit."""
     # xdg-terminal-exec reads --dir= up to the first newline: a folder name
     # with control characters could open the terminal somewhere else.
     if any(ord(c) < 32 or ord(c) == 127 for c in cwd):
-        fail("This session's folder name has control characters; resume it by hand")
+        fail("That folder's name has control characters; start the agent there by hand")
     if not os.path.isabs(cwd) or not os.path.isdir(cwd):
-        fail("Folder no longer exists: " + cwd)
+        fail("Folder doesn't exist: " + cwd)
     if shutil.which(agent.binary) is None:
         fail(agent.name + " is not installed (" + agent.binary + " not on PATH)")
 
     # Same launch path as `omarchy agent`: one app-id for every agent window,
-    # so window rules and themes apply to resumed sessions too.
-    terminal = ["xdg-terminal-exec", "--app-id=org.omarchy.agent", "--dir=" + cwd, "-e"] + agent.command(sid)
+    # so window rules and themes apply to these sessions too.
+    terminal = ["xdg-terminal-exec", "--app-id=org.omarchy.agent", "--dir=" + cwd, "-e"] + command
     if shutil.which("uwsm-app"):
         terminal = ["uwsm-app", "--"] + terminal
     try:
@@ -1128,13 +1148,28 @@ def cmd_open(args):
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError as e:
         fail("Could not start a terminal: " + str(e))
-    out({"ok": True, "message": "Resuming in " + cwd})
+    out({"ok": True, "message": verb + short_home(cwd)})
+
+
+def cmd_new(args):
+    if len(args) != 2:
+        fail("usage: new <agent> <folder>")
+    agent_id, folder = args
+    agent = AGENTS.get(agent_id)
+    if not agent:
+        fail("Unknown agent: " + agent_id)
+    # Any folder you name, known or not; ~ is your home.
+    if folder == "~" or folder.startswith("~/"):
+        folder = str(HOME) + folder[1:]
+    if not os.path.isabs(folder):
+        fail("Give a full path, like ~/Projects/app")
+    launch(agent, os.path.normpath(folder), [agent.binary], "Starting " + agent.name + " in ")
 
 
 def main(argv):
     if not argv:
-        fail("usage: omaisessions <list|open> ...")
-    commands = {"list": cmd_list, "open": cmd_open}
+        fail("usage: omaisessions <list|open|new> ...")
+    commands = {"list": cmd_list, "open": cmd_open, "new": cmd_new}
     command = commands.get(argv[0])
     if not command:
         fail("Unknown command: " + argv[0])

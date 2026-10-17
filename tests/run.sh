@@ -488,6 +488,26 @@ check "open rejects relative folders" bash -c "! '$HELPER' open claude aaaaaaaa-
 check "open rejects option-like ids" bash -c "! '$HELPER' open claude --dangerously-skip-permissions '$HOME' >/dev/null"
 check "open rejects unknown agents" bash -c "! '$HELPER' open rm aaaaaaaa-0000-0000-0000-000000000001 '$HOME' >/dev/null"
 check "open reports a missing agent" bash -c "PATH='$T/nostub:/usr/bin' '$HELPER' open claude aaaaaaaa-0000-0000-0000-000000000001 '$HOME/Projects/my-app' | jq -e '.error | test(\"not installed\")' >/dev/null"
+# Starting a new session: any agent, any existing folder (known or typed).
+folders=$(list | jq -c '[.folders[] | .path]')
+check "folders are the session folders, last used first" test "$(jq -r '.[0]' <<<"$folders")" = "$(list | jq -r '[.sessions[] | select(.exists)][0].cwd')"
+check "folders that no longer exist are left out" bash -c "! jq -e 'index(\"$HOME/gone\")' >/dev/null <<<'$folders'"
+check "a folder knows the agent used there last" test "$(list | jq -r --arg p "$HOME/Projects/my-app" '.folders[] | select(.path == $p) | .lastAgent')" = "$(list | jq -r --arg p "$HOME/Projects/my-app" '[.sessions[] | select(.cwd == $p)][0].agent')"
+for a in claude:claude codex:codex grok:grok cursor:cursor-agent opencode:opencode; do
+  rm -f "$T/launched"
+  out=$("$HELPER" new "${a%%:*}" "$HOME/Projects/app"); sleep 0.2
+  check "new ${a%%:*} session starts ${a#*:} with no arguments" test "$(tail -n 2 "$T/launched" | tr '\n' ' ')" = "-e ${a#*:} "
+done
+check "new session opens in that folder" test "$(sed -n 1p "$T/launched")" = "$HOME/Projects/app"
+rm -f "$T/launched"; mkdir -p "$HOME/brand-new"
+"$HELPER" new claude "~/brand-new" >/dev/null; sleep 0.2
+check "new session in a typed ~ folder" grep -qx -- "--dir=$HOME/brand-new" "$T/launched"
+check "new rejects a relative folder" bash -c "'$HELPER' new claude Projects | jq -e '.error | test(\"full path\")' >/dev/null"
+check "new rejects a missing folder" bash -c "! '$HELPER' new claude '$HOME/nope' >/dev/null"
+check "new rejects unknown agents" bash -c "! '$HELPER' new rm '$HOME' >/dev/null"
+odd="$HOME/odd"$'\n'"dir"; mkdir -p "$odd"
+check "new refuses folders with control characters" jq -e '.error | test("control characters")' <<<"$("$HELPER" new claude "$odd")"
+rm -rf "$odd" "$HOME/brand-new"
 check "unknown command fails" bash -c "! '$HELPER' frobnicate >/dev/null"
 
 echo

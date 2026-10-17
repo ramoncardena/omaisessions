@@ -26,7 +26,7 @@ Panel {
   readonly property var host: hostWidget || ({
     agents: [], sessions: [], home: "", loaded: false, busy: false, opening: "", runningCount: 0,
     needsYouCount: 0, statusMessage: "", errorMessage: "", now: 0, summary: "", maxSessions: 200,
-    refreshSeconds: 5, notifyNeedsYou: true
+    refreshSeconds: 5, notifyNeedsYou: true, folders: []
   })
 
   readonly property color foreground: root.barForeground
@@ -36,8 +36,19 @@ Panel {
   property string tab: "all"
   property int cursorIndex: 0
 
-  // The settings page replaces the list; one row per setting.
-  property bool showSettings: false
+  // "sessions" (the list), "new" (start a session) or "settings".
+  property string view: "sessions"
+  readonly property bool showSettings: view === "settings"
+  readonly property bool showNew: view === "new"
+  function toggleView(name) {
+    view = view === name ? "sessions" : name
+    settingsCursor = 0
+    newCursor = 0
+    agentPicked = false
+    searchField.text = ""
+  }
+
+  // The settings page: one row per setting.
   property int settingsCursor: 0
   readonly property int settingsCount: 3
 
@@ -66,6 +77,40 @@ Panel {
 
   readonly property var visibleSessions: Model.filter(root.host.sessions, root.tab, searchField.text, root.host.maxSessions)
 
+  // ---- New session: a folder (one you've used, or a path you type) and an
+  // installed agent, by default the one you used there last.
+  property int newCursor: 0
+  property string newAgent: ""
+  property bool agentPicked: false
+  readonly property var installedAgents: root.host.agents
+    .filter(function(a) { return a.installed })
+    .map(function(a) { return { value: a.id, label: a.name } })
+  readonly property var newFolders: Model.folderChoices(root.host.folders, searchField.text, root.host.home)
+  readonly property var newFolder: newFolders.length ? newFolders[Math.min(newCursor, newFolders.length - 1)] : null
+
+  function defaultAgent() {
+    if (agentPicked && installedAgents.some(function(a) { return a.value === newAgent })) return
+    var last = newFolder && newFolder.lastAgent
+    newAgent = installedAgents.some(function(a) { return a.value === last }) ? last
+      : installedAgents.length ? installedAgents[0].value : ""
+  }
+  onNewFolderChanged: defaultAgent()
+  onInstalledAgentsChanged: defaultAgent()
+
+  function moveAgent(dx) {
+    var i = 0
+    for (var k = 0; k < installedAgents.length; k++) if (installedAgents[k].value === newAgent) i = k
+    if (!installedAgents.length) return
+    newAgent = installedAgents[Math.max(0, Math.min(installedAgents.length - 1, i + dx))].value
+    agentPicked = true
+  }
+
+  function startNew() {
+    if (!newFolder || !newAgent || !root.hostWidget) return
+    var name = installedAgents.filter(function(a) { return a.value === newAgent })[0].label
+    root.hostWidget.newSession(newAgent, name, newFolder.path)
+  }
+
   function switchPanel(direction) {
     if (root.bar && typeof root.bar.switchPanelFrom === "function")
       return root.bar.switchPanelFrom(root.barIdentity, direction)
@@ -84,6 +129,10 @@ Panel {
   }
 
   function activate() {
+    if (showNew) {
+      startNew()
+      return
+    }
     if (showSettings) {
       if (settingsCursor === 1) adjustSetting(1)
       return
@@ -131,7 +180,7 @@ Panel {
     if (opened) {
       if (root.hostWidget) root.hostWidget.refresh()
       if (root.hostWidget) root.hostWidget.errorMessage = ""
-      showSettings = false
+      view = "sessions"
       // An agent waiting on you is why you opened this: start on it, so
       // Enter switches straight to its window.
       if (root.host.needsYouCount > 0) tab = "running"
@@ -157,12 +206,16 @@ Panel {
       anchors.fill: parent
       blocked: searchField.activeFocus || refreshField.field.activeFocus || maxField.field.activeFocus
       onCloseRequested: {
-        if (root.showSettings) root.showSettings = false
+        if (root.view !== "sessions") root.toggleView(root.view)
         else root.close()
       }
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onMoveRequested: function(dx, dy) {
-        if (root.showSettings) {
+        if (root.showNew) {
+          if (dx !== 0) root.moveAgent(dx)
+          else root.newCursor = Math.max(0, Math.min(root.newFolders.length - 1, root.newCursor + dy))
+        }
+        else if (root.showSettings) {
           if (dx !== 0) root.adjustSetting(dx)
           else root.settingsCursor = Math.max(0, Math.min(root.settingsCount - 1, root.settingsCursor + dy))
         }
@@ -171,9 +224,10 @@ Panel {
       }
       onActivateRequested: root.activate()
       onTextKey: function(text) {
-        if (text === "s") { root.showSettings = !root.showSettings; root.settingsCursor = 0 }
-        else if (root.showSettings) return
-        else if (text === "/") searchFocusTimer.restart()
+        if (text === "s" && !root.showNew) root.toggleView("settings")
+        else if (text === "n" && !root.showSettings) root.toggleView("new")
+        else if (text === "/" && !root.showSettings) searchFocusTimer.restart()
+        else if (root.view !== "sessions") return
         else if (text === "r" && root.hostWidget) root.hostWidget.refresh()
         else if (text >= "1" && text <= "9" && Number(text) <= root.tabs.length) root.tab = root.tabs[Number(text) - 1].value
       }
@@ -199,11 +253,18 @@ Panel {
             Row {
               spacing: Style.space(4)
               PanelActionButton {
+                iconText: "󰐕"
+                tooltipText: root.showNew ? "Back to sessions (n)" : "New session (n)"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: root.toggleView("new")
+              }
+              PanelActionButton {
                 iconText: "󰒓"
                 tooltipText: root.showSettings ? "Back to sessions (s)" : "Settings (s)"
                 foreground: root.foreground
                 fontFamily: root.fontFamily
-                onClicked: { root.showSettings = !root.showSettings; root.settingsCursor = 0 }
+                onClicked: root.toggleView("settings")
               }
               PanelActionButton {
                 iconText: "󰑐"
@@ -217,8 +278,29 @@ Panel {
           }
         }
 
+        Text {
+          visible: root.showNew
+          textFormat: Text.PlainText
+          text: "NEW SESSION"
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          font.letterSpacing: 1
+        }
+
         ButtonGroup {
-          visible: root.tabs.length > 1 && !root.showSettings
+          visible: root.showNew && root.installedAgents.length > 0
+          options: root.installedAgents
+          value: root.newAgent
+          focusable: false
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          fontSize: Style.font.bodySmall
+          onChanged: function(value) { root.newAgent = value; root.agentPicked = true }
+        }
+
+        ButtonGroup {
+          visible: root.tabs.length > 1 && root.view === "sessions"
           options: root.tabs
           value: root.tab
           focusable: false
@@ -232,10 +314,11 @@ Panel {
           id: searchField
           visible: !root.showSettings
           width: parent.width
-          placeholderText: "Search titles and folders (/)"
+          placeholderText: root.showNew ? "Filter folders, or type a path like ~/Projects/new (/)" : "Search titles and folders (/)"
           foreground: root.foreground
           font.family: root.fontFamily
           onAccepted: { root.endSearch(false); root.activate() }
+          onTextChanged: root.newCursor = 0
           Keys.onEscapePressed: function(event) { root.endSearch(true); event.accepted = true }
           Keys.onDownPressed: function(event) { root.endSearch(false); event.accepted = true }
         }
@@ -252,7 +335,7 @@ Panel {
         }
 
         Text {
-          visible: root.host.loaded && root.visibleSessions.length === 0 && !root.showSettings
+          visible: root.host.loaded && root.visibleSessions.length === 0 && root.view === "sessions"
           width: parent.width
           textFormat: Text.PlainText
           text: searchField.text.trim() !== "" ? "No sessions match \"" + searchField.text.trim() + "\"."
@@ -267,7 +350,7 @@ Panel {
           id: sessionList
           width: parent.width
           height: Math.min(contentHeight, Style.space(440))
-          visible: root.visibleSessions.length > 0 && !root.showSettings
+          visible: root.visibleSessions.length > 0 && root.view === "sessions"
           clip: true
           spacing: Style.space(2)
           boundsBehavior: Flickable.StopAtBounds
@@ -278,6 +361,38 @@ Panel {
             required property int index
             width: sessionList.width
             session: modelData
+            rowIndex: index
+          }
+        }
+
+        Text {
+          visible: root.showNew && root.newFolders.length === 0
+          width: parent.width
+          textFormat: Text.PlainText
+          text: root.installedAgents.length === 0 ? "No agent is installed." : "No folders match. Type a full path, like ~/Projects/app."
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+          wrapMode: Text.WordWrap
+        }
+
+        ListView {
+          id: folderList
+          width: parent.width
+          height: Math.min(contentHeight, Style.space(400))
+          visible: root.showNew && root.newFolders.length > 0
+          clip: true
+          spacing: Style.space(2)
+          boundsBehavior: Flickable.StopAtBounds
+          model: root.newFolders
+          currentIndex: root.newCursor
+          onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
+          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+          delegate: FolderRow {
+            required property var modelData
+            required property int index
+            width: folderList.width
+            folder: modelData
             rowIndex: index
           }
         }
@@ -338,12 +453,62 @@ Panel {
           width: parent.width
           textFormat: Text.PlainText
           text: root.showSettings ? "↑↓ select · ←→ change · Enter toggle · s or Esc back"
-            : "↑↓ select · ←→ tab · Enter resume or switch · / search · s settings"
+            : root.showNew ? "↑↓ folder · ←→ agent · Enter start · / filter or type a path · Esc back"
+            : "↑↓ select · ←→ tab · Enter resume or switch · / search · n new · s settings"
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
         }
+      }
+    }
+  }
+
+  component FolderRow: CursorSurface {
+    id: frow
+    property var folder: ({})
+    property int rowIndex: 0
+
+    hasCursor: root.newCursor === rowIndex
+    foreground: root.foreground
+    implicitHeight: frowContent.implicitHeight + Style.spacing.rowPaddingX
+
+    MouseArea {
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onContainsMouseChanged: if (containsMouse) root.newCursor = frow.rowIndex
+      onClicked: { root.newCursor = frow.rowIndex; root.startNew() }
+    }
+
+    ColumnLayout {
+      id: frowContent
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: Style.space(10)
+      anchors.rightMargin: Style.space(10)
+      spacing: Style.space(1)
+
+      Text {
+        Layout.fillWidth: true
+        textFormat: Text.PlainText
+        text: Model.shortPath(frow.folder.path, root.host.home)
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+        elide: Text.ElideMiddle
+      }
+      Text {
+        Layout.fillWidth: true
+        textFormat: Text.PlainText
+        text: frow.folder.typed ? "the folder you typed"
+          : Model.plural(frow.folder.sessions, "session", "sessions") + " · last " + Model.agentShortName(frow.folder.lastAgent)
+            + " · " + Model.relativeTime(frow.folder.updated, root.host.now)
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideRight
       }
     }
   }

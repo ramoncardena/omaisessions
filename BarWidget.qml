@@ -29,6 +29,7 @@ BarWidget {
 
   property var agents: []
   property var sessions: []
+  property var folders: []          // where agents have worked, last used first
   property string home: ""
   property bool loaded: false
   property string statusMessage: ""
@@ -63,6 +64,16 @@ BarWidget {
     statusMessage = (session.running ? "Switching to " : "Resuming ") + session.title + "…"
     opening = session.id
     openProc.command = [helperPath, "open", session.agent, session.id, session.cwd]
+    openProc.running = true
+  }
+
+  // A fresh session of agentId in folder (any folder: the helper checks it).
+  function newSession(agentId, agentName, folder) {
+    if (!agentId || !folder || openProc.running) return
+    errorMessage = ""
+    statusMessage = "Starting " + agentName + " in " + folder + "…"
+    opening = ""
+    openProc.command = [helperPath, "new", agentId, folder]
     openProc.running = true
   }
 
@@ -102,11 +113,12 @@ BarWidget {
         if (result && result.ok) {
           // Unchanged lists are dropped, so the periodic refresh doesn't
           // rebuild the panel's list under the cursor.
-          var key = JSON.stringify([result.agents, result.sessions])
+          var key = JSON.stringify([result.agents, result.sessions, result.folders])
           if (key !== root.listKey) {
             root.listKey = key
             root.agents = result.agents || []
             root.sessions = result.sessions || []
+            root.folders = result.folders || []
           }
           root.home = result.home || ""
           root.errorMessage = ""
