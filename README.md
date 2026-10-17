@@ -20,7 +20,8 @@ resuming it.
   while one needs you; opening the panel then lands on that session, so
   Enter switches straight to its window
 - A desktop notification when an agent starts waiting on you (once per wait,
-  however many monitors run the bar)
+  however many monitors run the bar); clicking it opens the panel on that
+  session
 - Picking a running session switches to its window instead of opening a
   second copy (two copies writing one session would corrupt it)
 - Titles from the agent's own naming (`/rename`, AI titles, Codex thread
@@ -141,8 +142,11 @@ Agent history is never modified.
 - Your terminal via `xdg-terminal-exec` (through `uwsm-app` when present),
   with the agent's own resume command, when you pick a session.
 - `hyprctl`, to find and focus a running session's window.
-- `notify-send`, when an agent starts waiting on you (if enabled). The text
-  is escaped, since notification servers render markup.
+- `omarchy-notification-send` (or `notify-send` elsewhere), when an agent
+  starts waiting on you, if enabled. Its click action is
+  `omarchy-shell shell summon` for this panel, passed as data, never a shell
+  string. The text is escaped, since notifications render markup, and handed
+  over as plain values: a title can't become an option or a hint.
 
 Every command is an argument list, never a shell string. Session ids must
 match a strict pattern before they reach a command line, a session opens in

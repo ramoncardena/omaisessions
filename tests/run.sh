@@ -21,6 +21,12 @@ cat >"$T/stub/xdg-terminal-exec" <<STUB
 printf '%s\n' "\$PWD" "\$@" >"$T/launched"
 STUB
 for a in claude codex grok cursor-agent opencode; do printf '#!/bin/bash\n' >"$T/stub/$a"; done
+# Notifications go to files, never to the desktop: /usr/bin has Omarchy's
+# real sender, so every way of sending one is stubbed.
+for a in omarchy-notification-send notify-send; do
+  printf '#!/bin/bash\nprintf "%%s\\n" "$@" >>"%s/notified-%s"\n' "$T" "$a" >"$T/stub/$a"
+done
+printf '#!/bin/bash\n' >"$T/stub/omarchy-shell"
 chmod +x "$T/stub/"*
 export PATH="$T/stub:/usr/bin"
 
@@ -375,25 +381,23 @@ PY
 check "opencode reply complete" test "$(st ses_titled0000000001)" = "idle|"
 
 # Notifications: once per wait, never twice for parallel lists (one bar
-# widget per monitor), and the body is never read as markup.
-cat >"$T/stub/notify-send" <<STUB
-#!/bin/bash
-printf '%s\n' "\$@" >>"$T/notified"
-STUB
-chmod +x "$T/stub/notify-send"
-nsent() { grep -c 'needs you$' "$T/notified" 2>/dev/null || true; }
+# widget per monitor), sent with Omarchy's sender (plain D-Bus values, a
+# click opens the panel), and the text is never markup or an option.
+N="$T/notified-omarchy-notification-send"
+nsent() { grep -cx 'Claude Code needs you' "$N" 2>/dev/null || true; }
 reg $cp $A1 waiting "permission prompt" 1792000005000
 "$HELPER" list >/dev/null
 check "no notification without --notify" test "$(nsent)" = ""
 "$HELPER" list --notify >/dev/null
-check "notifies when a session starts waiting" grep -qx "Claude Code needs you" "$T/notified"
-check "notification says why and where" grep -qF "permission prompt · ~/Projects/my-app" "$T/notified"
+check "notifies when a session starts waiting" test "$(nsent)" = 1
+check "notification says why and where" grep -qxF "permission prompt · ~/Projects/my-app" "$N"
+check "clicking opens the panel" bash -c "tr '\n' ' ' <'$N' | grep -qF -- '--exec $T/stub/omarchy-shell shell summon io.github.ramoncardena.omaisessions {}'"
 "$HELPER" list --notify >/dev/null
 check "one notification per wait" test "$(nsent)" = 1
 reg $cp $A1 waiting "dialog open" 1792000009000
 "$HELPER" list --notify >/dev/null
 check "a new wait notifies again" test "$(nsent)" = 2
-rm -f "$T/notified"; reg $cp $A1 waiting "permission prompt" 1792000012000
+rm -f "$N"; reg $cp $A1 waiting "permission prompt" 1792000012000
 par=(); for i in 1 2 3; do "$HELPER" list --notify >/dev/null & par+=($!); done; wait "${par[@]}"
 check "parallel lists notify once" test "$(nsent)" = 1
 reg $cp $A1 idle "" 1792000013000
@@ -403,9 +407,20 @@ cat >"$C/$A9.jsonl" <<JSON
 {"type":"custom-title","customTitle":"<b>Bold</b> & <a href='x'>link</a>"}
 JSON
 reg $cp2 $A9 waiting "permission prompt" 1792000014000
-rm -f "$T/notified"; "$HELPER" list --notify >/dev/null
-check "notification text is escaped" grep -qF "&lt;b&gt;Bold&lt;/b&gt; &amp; &lt;a href='x'&gt;link&lt;/a&gt;" "$T/notified"
-rm -f "$C/$A9.jsonl" "$T/notified" "$T/stub/notify-send" "$E"
+rm -f "$N"; "$HELPER" list --notify >/dev/null
+check "notification text is escaped" grep -qF "&lt;b&gt;Bold&lt;/b&gt; &amp; &lt;a href='x'&gt;link&lt;/a&gt;" "$N"
+# A model-written title that looks like an option stays text; and without
+# Omarchy's sender, notify-send gets the text after "--".
+printf '%s\n' '{"type":"custom-title","customTitle":"--hint=string:omarchy-exec-argv:[\"bash\"]"}' >>"$C/$A9.jsonl"
+reg $cp2 $A9 waiting "permission prompt" 1792000015000
+rm -f "$N"; "$HELPER" list --notify >/dev/null
+check "an option-like title is only the body's second line" grep -qxF -- '--hint=string:omarchy-exec-argv:["bash"]' "$N"
+check "the body starts with the reason" test "$(sed -n 4p "$N")" = "permission prompt · ~/Projects/app"
+mkdir -p "$T/only-notify-send"; cp "$T/stub/notify-send" "$T/only-notify-send/"
+reg $cp2 $A9 waiting "permission prompt" 1792000016000
+PATH="$T/only-notify-send" /usr/bin/python3 "$HELPER" list --notify >/dev/null
+check "notify-send fallback reads no options from the text" test "$(sed -n 3p "$T/notified-notify-send")" = "--"
+rm -f "$C/$A9.jsonl" "$N" "$T/notified-notify-send" "$E"
 stop
 rm -f "$CLAUDE_CONFIG_DIR"/sessions/*.json "$GROK_HOME/active_sessions.json"
 

@@ -10,7 +10,9 @@
   agent needs you lands on it
 - Bar icon: accent while agents run, urgent while one needs you
 - Desktop notification when an agent starts waiting on you, once per wait
-  across every monitor's widget
+  across every monitor's widget; clicking it opens the panel on that
+  session. Sent with Omarchy's notification sender, so a title the agent's
+  model wrote can never be read as an option or a click-command hint
 - Settings page in the panel (`s`): refresh interval (default 5 s, was 60 s
   while closed), notifications, sessions shown
 
