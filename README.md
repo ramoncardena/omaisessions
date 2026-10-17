@@ -12,10 +12,17 @@ resuming it.
 
 - One tab per agent (Claude Code, Codex, Grok, Cursor, OpenCode), plus **All** and
   **Running** tabs
-- Sessions that are open right now are marked, and the bar icon lights up
-  while any agent is running. Picking a running session switches to its
-  window instead of opening a second copy (two copies writing one session
-  would corrupt it)
+- Sessions that are open right now show what they're doing: **working**,
+  **needs you** (blocked on a permission or a question, with the reason) or
+  **your turn** (done), and for how long. The Running tab lists what needs
+  you first
+- The bar icon takes the accent color while agents run and the urgent color
+  while one needs you; opening the panel then lands on that session, so
+  Enter switches straight to its window
+- A desktop notification when an agent starts waiting on you (once per wait,
+  however many monitors run the bar)
+- Picking a running session switches to its window instead of opening a
+  second copy (two copies writing one session would corrupt it)
 - Titles from the agent's own naming (`/rename`, AI titles, Codex thread
   names, Grok, Cursor and OpenCode titles), falling back to your first prompt
 - Folder, git branch and last activity for each session; sessions whose folder
@@ -32,7 +39,19 @@ resuming it.
 | `Enter` | Resume in a terminal, or switch to it if it's running |
 | `/` | Search (Esc clears, ↓ back to the list) |
 | `r` | Refresh |
+| `s` | Settings (refresh interval, notifications, sessions shown) |
 | `Esc` | Close |
+
+## Settings
+
+Press `s` (or the gear) in the panel. Changes are saved to your bar config
+(`~/.config/omarchy/shell.json`) right away.
+
+| Setting | Default | |
+|---|---|---|
+| Refresh every | 5 s | How fast the icon notices an agent that needs you; each refresh takes about 0.1 s |
+| Notify when an agent needs you | on | One desktop notification per wait |
+| Sessions to show | 200 | |
 
 ## Install
 
@@ -59,6 +78,16 @@ and prints JSON for the panel:
 | Grok | `~/.grok/sessions/<folder>/<id>/summary.json` (or `$GROK_HOME`) | `grok --resume <id>` | `~/.grok/active_sessions.json` |
 | Cursor | `~/.cursor/chats/<md5 of folder>/<id>/store.db` (or `$CURSOR_CONFIG_DIR`) | `cursor-agent --resume <id>` | process with the store open |
 | OpenCode | `~/.local/share/opencode/opencode.db` (or `$XDG_DATA_HOME`) | `opencode --session <id>` | `opencode --session <id>`, or the newest session in its folder |
+
+What a running session is doing comes from the agent's own records:
+
+| Agent | Working / your turn | Needs you |
+|---|---|---|
+| Claude Code | `status` in `~/.claude/sessions/<pid>.json` | `waitingFor` there (permission prompt, dialog, input) |
+| Codex | `task_started` / `task_complete` in the rollout | not recorded: approval prompts read as working |
+| Grok | `turn_started` / `turn_ended` in the session's `events.jsonl` | `permission_requested` there |
+| OpenCode | the latest message's completion in `opencode.db` | not recorded: permission prompts read as working |
+| Cursor | not recorded: shown as running | |
 
 Cursor names each chat's directory after an md5 of its folder, so the folder
 is recovered by matching that hash: against paths inside the chat, then the
@@ -100,13 +129,20 @@ everything omAiSessions touches, so you can check it before enabling it.
 
 **Writes**
 - `~/.cache/omaisessions/index.json` (mode `600`): the extracted titles and
-  first prompts, so a refresh doesn't re-read unchanged files. Nothing else is
-  written, and agent history is never modified.
+  first prompts, so a refresh doesn't re-read unchanged files.
+- `~/.cache/omaisessions/notified.json` and `notify.lock`: which waits were
+  already announced, so each one notifies once.
+- Its own settings in `~/.config/omarchy/shell.json`, through the shell,
+  when you change them.
+
+Agent history is never modified.
 
 **Runs**
 - Your terminal via `xdg-terminal-exec` (through `uwsm-app` when present),
   with the agent's own resume command, when you pick a session.
 - `hyprctl`, to find and focus a running session's window.
+- `notify-send`, when an agent starts waiting on you (if enabled). The text
+  is escaped, since notification servers render markup.
 
 Every command is an argument list, never a shell string. Session ids must
 match a strict pattern before they reach a command line, a session opens in

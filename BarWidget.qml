@@ -10,8 +10,9 @@ import qs.Ui
 // object per command.
 //
 // The bar mounts one instance per monitor. Listing is cheap (the helper
-// caches by file mtime), so each instance refreshes on its own: often while
-// the panel is open, rarely otherwise, to keep the running state current.
+// caches by file mtime), so each instance refreshes on its own, every few
+// seconds, to keep what's running (and what needs you) current. The helper
+// makes sure only one of them sends a given notification.
 BarWidget {
   id: root
   moduleName: "io.github.ramoncardena.omaisessions"
@@ -19,6 +20,8 @@ BarWidget {
   readonly property string helperPath: decodeURIComponent(String(Qt.resolvedUrl("bin/omaisessions")).replace(/^file:\/\//, ""))
 
   readonly property int maxSessions: Math.max(20, Number(setting("maxSessions", 200)) || 200)
+  readonly property int refreshSeconds: Math.max(2, Math.min(300, Number(setting("refreshSeconds", 5)) || 5))
+  readonly property bool notifyNeedsYou: setting("notifyNeedsYou", true) !== false
 
   property var agents: []
   property var sessions: []
@@ -32,10 +35,12 @@ BarWidget {
 
   readonly property bool busy: listProc.running || openProc.running
   readonly property int runningCount: sessions.filter(function(s) { return s.running }).length
+  readonly property int needsYouCount: sessions.filter(function(s) { return s.running && s.state === "waiting" }).length
   readonly property string summary: !loaded ? "LOADING"
     : sessions.length === 0 ? "NO SESSIONS"
     : sessions.length + (sessions.length === 1 ? " SESSION" : " SESSIONS")
       + (runningCount > 0 ? " · " + runningCount + " RUNNING" : "")
+      + (needsYouCount > 0 ? " · " + needsYouCount + (needsYouCount === 1 ? " NEEDS YOU" : " NEED YOU") : "")
 
   function parse(text) {
     try { return JSON.parse(String(text || "")) } catch (e) { return null }
@@ -44,7 +49,7 @@ BarWidget {
   function refresh() {
     now = Date.now()
     if (listProc.running) return
-    listProc.command = [helperPath, "list"]
+    listProc.command = notifyNeedsYou ? [helperPath, "list", "--notify"] : [helperPath, "list"]
     listProc.running = true
   }
 
@@ -57,10 +62,28 @@ BarWidget {
     openProc.running = true
   }
 
+  // Writes this widget's settings into the bar config (shell.json); they come
+  // back through `settings`, so every monitor's instance picks them up.
+  function saveSettings(changes) {
+    if (!root.bar || !root.bar.shell || typeof root.bar.shell.updateEntryInline !== "function") {
+      errorMessage = "Settings can't be saved from here"
+      return false
+    }
+    var entry = { id: root.moduleName }
+    for (var key in root.settings) if (key !== "id") entry[key] = root.settings[key]
+    for (var change in changes) entry[change] = changes[change]
+    if (!root.bar.shell.updateEntryInline(root.moduleName, entry)) {
+      errorMessage = "Could not save settings to shell.json"
+      return false
+    }
+    errorMessage = ""
+    return true
+  }
+
   Component.onCompleted: Qt.callLater(refresh)
 
   Timer {
-    interval: root.opened ? 5000 : 60000
+    interval: root.refreshSeconds * 1000
     running: true
     repeat: true
     onTriggered: root.refresh()
@@ -170,9 +193,12 @@ BarWidget {
       }
     }
     tooltipText: !root.loaded ? "AI sessions"
+      : root.needsYouCount > 0 ? "AI sessions: " + root.needsYouCount + (root.needsYouCount === 1 ? " needs you" : " need you")
       : root.runningCount > 0 ? "AI sessions: " + root.runningCount + " running"
       : "AI sessions: " + root.sessions.length
+    // Accent while agents run; the bar's urgent color while one needs you.
     active: root.runningCount > 0
+    activeColor: root.needsYouCount > 0 ? (root.bar ? root.bar.urgent : Color.urgent) : Color.accent
     onPressed: function(mouseButton) { root.toggle() }
   }
 }

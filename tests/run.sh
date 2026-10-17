@@ -329,6 +329,86 @@ check "opening an ended new session explains" bash -c "'$HELPER' open codex eeee
 stop
 rm -f "$CLAUDE_CONFIG_DIR"/sessions/*.json "$GROK_HOME/active_sessions.json"
 
+# ---- Whether a running session is working, waiting on you, or done.
+R="$X/rollout-2026-10-12T10-00-00-bbbbbbbb-0000-0000-0000-000000000001.jsonl"
+spawn bash -c 'exec -a claude sleep 300'; cp=$!
+spawn bash -c 'exec -a claude sleep 300'; cp2=$!
+spawn bash -c 'exec -a grok sleep 300'; gp=$!
+spawn bash -c "exec 3<'$R'; exec -a codex sleep 300"
+spawn bash -c 'exec -a opencode python3 -c "import time; time.sleep(300)" --session ses_titled0000000001'
+sleep 0.3
+reg() { echo "{\"pid\":$1,\"sessionId\":\"$2\",\"procStart\":\"$(start_of $1)\",\"status\":\"$3\",\"waitingFor\":\"$4\",\"statusUpdatedAt\":$5}" >"$CLAUDE_CONFIG_DIR/sessions/$1.json"; }
+st() { list | jq -r --arg id "$1" '.sessions[] | select(.id == $id) | [.state, (.waitingFor // "")] | join("|")'; }
+A1=aaaaaaaa-0000-0000-0000-000000000001
+reg $cp $A1 busy "" 1792000000000
+check "claude working" test "$(st $A1)" = "working|"
+reg $cp $A1 waiting "permission prompt" 1792000001000
+check "claude waiting, with its reason" test "$(st $A1)" = "waiting|permission prompt"
+check "waiting since the status changed" test "$(list | jq -r --arg id $A1 '.sessions[] | select(.id == $id) | .stateSince')" = 1792000001
+reg $cp $A1 idle "" 1792000002000
+check "claude done: your turn" test "$(st $A1)" = "idle|"
+
+B1=bbbbbbbb-0000-0000-0000-000000000001
+echo '{"timestamp":"2026-10-12T10:01:00Z","type":"event_msg","payload":{"type":"task_started"}}' >>"$R"
+check "codex working on a turn" test "$(st $B1)" = "working|"
+echo '{"timestamp":"2026-10-12T10:02:00Z","type":"event_msg","payload":{"type":"task_complete"}}' >>"$R"
+check "codex turn complete" test "$(st $B1)" = "idle|"
+
+C2=cccccccc-0000-0000-0000-000000000002; E="$G/$C2/events.jsonl"
+echo "[{\"session_id\":\"$C2\",\"pid\":$gp,\"pid_start\":$(start_of $gp)}]" >"$GROK_HOME/active_sessions.json"
+echo '{"ts":"2026-10-17T10:00:00Z","type":"turn_started"}' >"$E"
+check "grok working" test "$(st $C2)" = "working|"
+echo '{"ts":"2026-10-17T10:00:05Z","type":"permission_requested","tool_name":"bash"}' >>"$E"
+check "grok waiting on a permission" test "$(st $C2)" = "waiting|permission prompt"
+echo '{"ts":"2026-10-17T10:00:09Z","type":"permission_resolved"}' >>"$E"
+check "grok working again once answered" test "$(st $C2)" = "working|"
+echo '{"ts":"2026-10-17T10:01:00Z","type":"turn_ended","outcome":"completed"}' >>"$E"
+check "grok turn over" test "$(st $C2)" = "idle|"
+
+check "opencode working until the reply completes" test "$(st ses_titled0000000001)" = "working|"
+python3 - "$OC" <<'PY'
+import json, sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+db.execute("UPDATE message SET data = ? WHERE id = 'msg2'", (json.dumps({"role": "assistant", "time": {"created": 1, "completed": 2}, "finish": "stop"}),))
+db.commit()
+PY
+check "opencode reply complete" test "$(st ses_titled0000000001)" = "idle|"
+
+# Notifications: once per wait, never twice for parallel lists (one bar
+# widget per monitor), and the body is never read as markup.
+cat >"$T/stub/notify-send" <<STUB
+#!/bin/bash
+printf '%s\n' "\$@" >>"$T/notified"
+STUB
+chmod +x "$T/stub/notify-send"
+nsent() { grep -c 'needs you$' "$T/notified" 2>/dev/null || true; }
+reg $cp $A1 waiting "permission prompt" 1792000005000
+"$HELPER" list >/dev/null
+check "no notification without --notify" test "$(nsent)" = ""
+"$HELPER" list --notify >/dev/null
+check "notifies when a session starts waiting" grep -qx "Claude Code needs you" "$T/notified"
+check "notification says why and where" grep -qF "permission prompt · ~/Projects/my-app" "$T/notified"
+"$HELPER" list --notify >/dev/null
+check "one notification per wait" test "$(nsent)" = 1
+reg $cp $A1 waiting "dialog open" 1792000009000
+"$HELPER" list --notify >/dev/null
+check "a new wait notifies again" test "$(nsent)" = 2
+rm -f "$T/notified"; reg $cp $A1 waiting "permission prompt" 1792000012000
+par=(); for i in 1 2 3; do "$HELPER" list --notify >/dev/null & par+=($!); done; wait "${par[@]}"
+check "parallel lists notify once" test "$(nsent)" = 1
+reg $cp $A1 idle "" 1792000013000
+A9=aaaaaaaa-0000-0000-0000-000000000009
+cat >"$C/$A9.jsonl" <<JSON
+{"type":"user","cwd":"$HOME/Projects/app","message":{"role":"user","content":"hi"}}
+{"type":"custom-title","customTitle":"<b>Bold</b> & <a href='x'>link</a>"}
+JSON
+reg $cp2 $A9 waiting "permission prompt" 1792000014000
+rm -f "$T/notified"; "$HELPER" list --notify >/dev/null
+check "notification text is escaped" grep -qF "&lt;b&gt;Bold&lt;/b&gt; &amp; &lt;a href='x'&gt;link&lt;/a&gt;" "$T/notified"
+rm -f "$C/$A9.jsonl" "$T/notified" "$T/stub/notify-send" "$E"
+stop
+rm -f "$CLAUDE_CONFIG_DIR"/sessions/*.json "$GROK_HOME/active_sessions.json"
+
 # Codex fallback title when the index has no name.
 : >"$CODEX_HOME/session_index.jsonl"
 check "codex falls back to first prompt" test "$(field bbbbbbbb-0000-0000-0000-000000000001 title)" = "Add dark mode"

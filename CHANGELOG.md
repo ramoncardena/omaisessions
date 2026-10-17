@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.0
+
+- Running sessions show what they're doing: working, needs you (with the
+  reason) or your turn, and for how long. Read from Claude Code's session
+  status, Codex's turn events, Grok's events (including permission
+  requests) and OpenCode's latest message
+- The Running tab lists what needs you first; opening the panel while an
+  agent needs you lands on it
+- Bar icon: accent while agents run, urgent while one needs you
+- Desktop notification when an agent starts waiting on you, once per wait
+  across every monitor's widget
+- Settings page in the panel (`s`): refresh interval (default 5 s, was 60 s
+  while closed), notifications, sessions shown
+
 ## 0.3.0
 
 - Security review: a session opens only in the folder its own history

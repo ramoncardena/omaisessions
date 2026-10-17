@@ -5,7 +5,10 @@ Every command prints a single JSON object on stdout. Failures print
 {"ok": false, "error": "..."} and exit non-zero, so the QML side can show the
 message without parsing stderr.
 
-  omaisessions list [--limit N]          every known session, newest first
+  omaisessions list [--limit N] [--notify]
+                                         every known session, newest first;
+                                         --notify announces sessions that
+                                         start waiting on you
   omaisessions open <agent> <id> <cwd>   resume a session in a terminal in <cwd>,
                                          or focus its window if it is running
 
@@ -15,6 +18,7 @@ one gets a small reader below. Readers only extract what the panel shows
 a refresh only re-reads the files that changed.
 """
 
+import fcntl
 import hashlib
 import json
 import os
@@ -25,6 +29,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 
@@ -32,6 +37,7 @@ CACHE_VERSION = 2
 HOME = Path.home()
 CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME") or HOME / ".cache") / "omaisessions"
 CACHE_FILE = CACHE_DIR / "index.json"
+NOTIFIED_FILE = CACHE_DIR / "notified.json"
 PROC = Path(os.environ.get("OMAISESSIONS_PROC") or "/proc")
 
 # Session ids end up on a command line; only accept what the agents generate.
@@ -74,6 +80,33 @@ def read_lines(path):
     with open(path, "rb") as f:
         for raw in f:
             yield raw
+
+
+def read_tail(path, size=262144):
+    """The last lines of a log, newest first; enough to find the last turn."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            end = f.tell()
+            f.seek(max(0, end - size))
+            data = f.read()
+    except OSError:
+        return []
+    lines = data.split(b"\n")
+    if end > size:
+        lines = lines[1:]  # the first one is cut
+    return [l for l in reversed(lines) if l.strip()]
+
+
+def state(name, since=None, waiting_for=""):
+    # working: the agent is on a turn. waiting: a prompt (a permission, a
+    # question) blocks it. idle: the turn is over and it's your move.
+    result = {"state": name}
+    if since:
+        result["stateSince"] = int(since)
+    if waiting_for:
+        result["waitingFor"] = one_line(waiting_for)
+    return result
 
 
 def loads(raw):
@@ -213,13 +246,23 @@ class Claude:
 
     def running(self):
         # Every interactive claude writes sessions/<pid>.json with the session
-        # it is on, kept current across /clear and /resume.
+        # it is on, kept current across /clear and /resume, and its status.
         found = {}
+        self.live = {}
         for f in (self.config / "sessions").glob("*.json"):
             entry = loads(f.read_bytes()) if f.is_file() else None
             if entry and entry.get("sessionId") and alive(entry.get("pid", 0), entry.get("procStart")):
                 found[entry["sessionId"]] = (int(entry["pid"]), entry.get("cwd"))
+                self.live[entry["sessionId"]] = entry
         return found
+
+    def status(self, session):
+        entry = getattr(self, "live", {}).get(session["id"]) or {}
+        since = (entry.get("statusUpdatedAt") or 0) / 1000
+        name = {"busy": "working", "waiting": "waiting", "idle": "idle"}.get(entry.get("status"))
+        if not name:
+            return None
+        return state(name, since, entry.get("waitingFor") or ("permission prompt" if name == "waiting" else ""))
 
     def matches(self, argv):
         return program_is(argv, "claude")
@@ -291,6 +334,22 @@ class Codex:
 
     def running(self):
         return {}  # no registry; found through open files (see find_running)
+
+    def status(self, session):
+        # The rollout logs each turn's task_started and task_complete (or
+        # turn_aborted). Approval prompts are not logged, so a turn waiting
+        # on one reads as working.
+        if not session.get("_path"):
+            return state("idle")  # no rollout yet: nothing sent
+        for raw in read_tail(session["_path"]):
+            if b'"event_msg"' not in raw:
+                continue
+            entry = loads(raw)
+            payload = entry.get("payload") if isinstance(entry, dict) else None
+            kind = payload.get("type") if isinstance(payload, dict) else None
+            if kind in ("task_started", "task_complete", "turn_aborted"):
+                return state("working" if kind == "task_started" else "idle", iso_epoch(entry.get("timestamp") or ""))
+        return state("idle")
 
     def session_for_fd(self, target):
         # Current Codex runs sessions in a `codex app-server` daemon, which
@@ -377,6 +436,26 @@ class Grok:
         if updated:
             session["updated"] = updated
         return session
+
+    def status(self, session):
+        # events.jsonl logs turn_started / turn_ended and, in between,
+        # permission_requested / permission_resolved.
+        folder = Path(session["_path"]).parent if session.get("_path") else (
+            self.root / urllib.parse.quote(session.get("cwd") or "", safe="") / session["id"])
+        pending = None
+        for raw in read_tail(folder / "events.jsonl"):
+            entry = loads(raw)
+            kind = entry.get("type") if isinstance(entry, dict) else None
+            since = iso_epoch(entry.get("ts") or "") if kind else None
+            if kind == "permission_resolved" and pending is None:
+                pending = False
+            elif kind == "permission_requested" and pending is None:
+                pending = since
+            elif kind == "turn_ended":
+                return state("idle", since)
+            elif kind == "turn_started":
+                return state("waiting", pending, "permission prompt") if pending else state("working", since)
+        return state("idle")
 
     def running(self):
         found = {}
@@ -562,6 +641,27 @@ class OpenCode:
                 if not is_noise(text):
                     return text
         return None
+
+    def status(self, session):
+        # A turn is over once the latest assistant message has completed
+        # with a final finish reason; "tool-calls" means another step comes.
+        # Permission prompts are not stored, so they read as working.
+        try:
+            db = sqlite3.connect("file:" + session["_path"] + "?mode=ro", uri=True, timeout=1)
+            try:
+                row = db.execute("SELECT data FROM message WHERE session_id = ? ORDER BY time_created DESC LIMIT 1",
+                                 (session["id"],)).fetchone()
+            finally:
+                db.close()
+        except (sqlite3.Error, KeyError):
+            return None
+        message = loads(row[0]) if row else None
+        if not isinstance(message, dict):
+            return state("idle")
+        times = message.get("time") if isinstance(message.get("time"), dict) else {}
+        if message.get("role") == "assistant" and times.get("completed") and message.get("finish") not in (None, "tool-calls"):
+            return state("idle", times["completed"] / 1000)
+        return state("working", (times.get("created") or 0) / 1000)
 
     def running(self):
         return {}  # no registry: found by argv (--session <id>) or folder
@@ -827,6 +927,13 @@ def collect():
     sessions.sort(key=lambda s: s["updated"], reverse=True)
     for s in sessions:
         s["exists"] = os.path.isdir(s["cwd"])
+        if s["running"] and hasattr(AGENTS[s["agent"]], "status"):
+            try:
+                found = AGENTS[s["agent"]].status(s)
+            except (OSError, ValueError, TypeError, AttributeError, KeyError, RecursionError):
+                found = None
+            if found:
+                s.update(found)
 
     for agent in AGENTS.values():
         mine = [s for s in sessions if s["agent"] == agent.id]
@@ -844,13 +951,80 @@ def public(session):
     return {k: v for k, v in session.items() if not k.startswith("_") and k != "folderHash"}
 
 
+AGENT_NOUN = {"claude": "Claude Code", "codex": "Codex", "grok": "Grok", "cursor": "Cursor", "opencode": "OpenCode"}
+
+
+def markup_escape(text):
+    # Notification bodies may be rendered as markup, and titles can be written
+    # by the agent's model: show them as text.
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def short_home(path):
+    p = str(path or "")
+    return "~" + p[len(str(HOME)):] if p == str(HOME) or p.startswith(str(HOME) + "/") else p
+
+
+def notify_waiting(sessions):
+    """Notify once per episode of a session waiting on you.
+
+    The bar runs one widget per monitor and each one lists; the lock and the
+    record of what was already announced make exactly one of them notify.
+    """
+    if shutil.which("notify-send") is None:
+        return
+    waiting = {s["agent"] + "/" + s["id"]: s for s in sessions if s.get("state") == "waiting"}
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        lock = os.open(CACHE_DIR / "notify.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError:
+        return
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            with open(NOTIFIED_FILE, encoding="utf-8") as f:
+                seen = json.load(f)
+        except (OSError, ValueError):
+            seen = {}
+        seen = seen if isinstance(seen, dict) else {}
+        announced = {}
+        for key, s in waiting.items():
+            mark = str(s.get("stateSince") or "")
+            announced[key] = mark
+            if seen.get(key) == mark:
+                continue
+            title = AGENT_NOUN.get(s["agent"], s["agent"]) + " needs you"
+            body = s["title"] + "\n" + (s.get("waitingFor") or "waiting") + " · " + short_home(s["cwd"])
+            try:
+                subprocess.run(["notify-send", "--app-name=AI Sessions", "--urgency=normal", title, markup_escape(body)],
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+            except (OSError, subprocess.SubprocessError):
+                pass
+        if announced != seen:
+            fd, tmp = tempfile.mkstemp(dir=CACHE_DIR, prefix=".notified.")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(announced, f)
+            os.replace(tmp, NOTIFIED_FILE)
+    except OSError:
+        pass
+    finally:
+        os.close(lock)
+
+
 def cmd_list(args):
-    limit = 0
-    if args[:1] == ["--limit"]:
-        if len(args) < 2 or not args[1].isdigit():
-            fail("--limit needs a number")
-        limit = int(args[1])
+    limit, notify = 0, False
+    rest = list(args)
+    while rest:
+        arg = rest.pop(0)
+        if arg == "--notify":
+            notify = True
+        elif arg == "--limit" and rest and rest[0].isdigit():
+            limit = int(rest.pop(0))
+        else:
+            fail("usage: list [--limit N] [--notify]")
     agents, sessions = collect()
+    if notify:
+        notify_waiting(sessions)
     if limit:
         sessions = sessions[:limit]
     out({"ok": True, "home": str(HOME), "generated": int(time.time()), "agents": agents,

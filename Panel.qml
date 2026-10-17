@@ -25,7 +25,8 @@ Panel {
   // Until BarWidget.qml injects itself, bind against an inert stand-in.
   readonly property var host: hostWidget || ({
     agents: [], sessions: [], home: "", loaded: false, busy: false, opening: "", runningCount: 0,
-    statusMessage: "", errorMessage: "", now: 0, summary: "", maxSessions: 200
+    needsYouCount: 0, statusMessage: "", errorMessage: "", now: 0, summary: "", maxSessions: 200,
+    refreshSeconds: 5, notifyNeedsYou: true
   })
 
   readonly property color foreground: root.barForeground
@@ -34,6 +35,22 @@ Panel {
 
   property string tab: "all"
   property int cursorIndex: 0
+
+  // The settings page replaces the list; one row per setting.
+  property bool showSettings: false
+  property int settingsCursor: 0
+  readonly property int settingsCount: 3
+
+  function save(changes) {
+    if (root.hostWidget) root.hostWidget.saveSettings(changes)
+  }
+
+  // ←→ on the selected setting: seconds by 1, sessions by 20, toggle flips.
+  function adjustSetting(dx) {
+    if (settingsCursor === 0) save({ refreshSeconds: Math.max(2, Math.min(300, root.host.refreshSeconds + dx)) })
+    else if (settingsCursor === 1) save({ notifyNeedsYou: !root.host.notifyNeedsYou })
+    else save({ maxSessions: Math.max(20, Math.min(2000, root.host.maxSessions + dx * 20)) })
+  }
 
   // "All", "Running" while anything runs, and one tab per agent that has
   // sessions on this computer.
@@ -67,6 +84,10 @@ Panel {
   }
 
   function activate() {
+    if (showSettings) {
+      if (settingsCursor === 1) adjustSetting(1)
+      return
+    }
     if (visibleSessions.length && root.hostWidget) root.hostWidget.openSession(visibleSessions[cursorIndex])
   }
 
@@ -110,6 +131,10 @@ Panel {
     if (opened) {
       if (root.hostWidget) root.hostWidget.refresh()
       if (root.hostWidget) root.hostWidget.errorMessage = ""
+      showSettings = false
+      // An agent waiting on you is why you opened this: start on it, so
+      // Enter switches straight to its window.
+      if (root.host.needsYouCount > 0) tab = "running"
       cursorIndex = 0
       sessionList.positionViewAtBeginning()
     } else {
@@ -130,16 +155,25 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: searchField.activeFocus
-      onCloseRequested: root.close()
+      blocked: searchField.activeFocus || refreshField.field.activeFocus || maxField.field.activeFocus
+      onCloseRequested: {
+        if (root.showSettings) root.showSettings = false
+        else root.close()
+      }
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onMoveRequested: function(dx, dy) {
-        if (dx !== 0) root.moveTab(dx)
+        if (root.showSettings) {
+          if (dx !== 0) root.adjustSetting(dx)
+          else root.settingsCursor = Math.max(0, Math.min(root.settingsCount - 1, root.settingsCursor + dy))
+        }
+        else if (dx !== 0) root.moveTab(dx)
         else root.moveCursor(dy)
       }
       onActivateRequested: root.activate()
       onTextKey: function(text) {
-        if (text === "/") searchFocusTimer.restart()
+        if (text === "s") { root.showSettings = !root.showSettings; root.settingsCursor = 0 }
+        else if (root.showSettings) return
+        else if (text === "/") searchFocusTimer.restart()
         else if (text === "r" && root.hostWidget) root.hostWidget.refresh()
         else if (text >= "1" && text <= "9" && Number(text) <= root.tabs.length) root.tab = root.tabs[Number(text) - 1].value
       }
@@ -162,19 +196,29 @@ Panel {
             }
           }
           trailingControl: Component {
-            PanelActionButton {
-              iconText: "󰑐"
-              tooltipText: "Refresh (r)"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              enabled: !root.host.busy
-              onClicked: if (root.hostWidget) root.hostWidget.refresh()
+            Row {
+              spacing: Style.space(4)
+              PanelActionButton {
+                iconText: "󰒓"
+                tooltipText: root.showSettings ? "Back to sessions (s)" : "Settings (s)"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: { root.showSettings = !root.showSettings; root.settingsCursor = 0 }
+              }
+              PanelActionButton {
+                iconText: "󰑐"
+                tooltipText: "Refresh (r)"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                enabled: !root.host.busy
+                onClicked: if (root.hostWidget) root.hostWidget.refresh()
+              }
             }
           }
         }
 
         ButtonGroup {
-          visible: root.tabs.length > 1
+          visible: root.tabs.length > 1 && !root.showSettings
           options: root.tabs
           value: root.tab
           focusable: false
@@ -186,6 +230,7 @@ Panel {
 
         TextField {
           id: searchField
+          visible: !root.showSettings
           width: parent.width
           placeholderText: "Search titles and folders (/)"
           foreground: root.foreground
@@ -207,7 +252,7 @@ Panel {
         }
 
         Text {
-          visible: root.host.loaded && root.visibleSessions.length === 0
+          visible: root.host.loaded && root.visibleSessions.length === 0 && !root.showSettings
           width: parent.width
           textFormat: Text.PlainText
           text: searchField.text.trim() !== "" ? "No sessions match \"" + searchField.text.trim() + "\"."
@@ -222,7 +267,7 @@ Panel {
           id: sessionList
           width: parent.width
           height: Math.min(contentHeight, Style.space(440))
-          visible: root.visibleSessions.length > 0
+          visible: root.visibleSessions.length > 0 && !root.showSettings
           clip: true
           spacing: Style.space(2)
           boundsBehavior: Flickable.StopAtBounds
@@ -237,10 +282,63 @@ Panel {
           }
         }
 
+        Column {
+          visible: root.showSettings
+          width: parent.width
+          spacing: Style.space(8)
+
+          NumberField {
+            id: refreshField
+            label: "Refresh every (seconds)"
+            from: 2
+            to: 300
+            value: root.host.refreshSeconds
+            hasCursor: root.settingsCursor === 0
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onModified: function(value) { root.save({ refreshSeconds: value }) }
+            onHovered: function(on) { if (on) root.settingsCursor = 0 }
+          }
+          Text {
+            width: parent.width
+            textFormat: Text.PlainText
+            text: "How fast the bar icon notices an agent that needs you. Each refresh takes a fraction of a second."
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+          Toggle {
+            width: parent.width
+            label: "Notify when an agent needs you"
+            description: "A desktop notification when a session is blocked on a prompt (Claude Code and Grok report it; Codex and OpenCode approval prompts aren't visible)."
+            checked: root.host.notifyNeedsYou
+            hasCursor: root.settingsCursor === 1
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onClicked: root.save({ notifyNeedsYou: !root.host.notifyNeedsYou })
+            onHovered: function(on) { if (on) root.settingsCursor = 1 }
+          }
+          NumberField {
+            id: maxField
+            label: "Sessions to show"
+            from: 20
+            to: 2000
+            stepSize: 20
+            value: root.host.maxSessions
+            hasCursor: root.settingsCursor === 2
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onModified: function(value) { root.save({ maxSessions: value }) }
+            onHovered: function(on) { if (on) root.settingsCursor = 2 }
+          }
+        }
+
         Text {
           width: parent.width
           textFormat: Text.PlainText
-          text: "↑↓ select · ←→ tab · Enter resume or switch · / search"
+          text: root.showSettings ? "↑↓ select · ←→ change · Enter toggle · s or Esc back"
+            : "↑↓ select · ←→ tab · Enter resume or switch · / search · s settings"
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
@@ -255,6 +353,7 @@ Panel {
     property var session: ({})
     property int rowIndex: 0
     readonly property bool missing: session.exists === false
+    readonly property bool waiting: session.running === true && session.state === "waiting"
 
     hasCursor: root.cursorIndex === rowIndex
     foreground: root.foreground
@@ -285,7 +384,7 @@ Panel {
           visible: row.session.running === true
           textFormat: Text.PlainText
           text: "●"
-          color: Color.accent
+          color: row.waiting ? Color.urgent : row.session.state === "idle" ? root.foreground : Color.accent
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           Layout.alignment: Qt.AlignVCenter
@@ -307,8 +406,8 @@ Panel {
           + Model.shortPath(row.session.cwd, root.host.home)
           + (row.session.branch ? " (" + row.session.branch + ")" : "")
           + (row.missing ? " · folder missing" : "")
-          + " · " + (row.session.running ? "running" : Model.relativeTime(row.session.updated, root.host.now))
-        color: row.missing ? Color.urgent : root.dim
+          + " · " + (row.session.running ? Model.stateLabel(row.session, root.host.now) : Model.relativeTime(row.session.updated, root.host.now))
+        color: row.missing || row.waiting ? Color.urgent : root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
         elide: Text.ElideMiddle
