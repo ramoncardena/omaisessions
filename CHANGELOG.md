@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Projects tab: sessions grouped by git repository (a subfolder or a
+  worktree counts as its repository) or by folder, with their agents and
+  what's running or needs you; open one to see its sessions, `n` to start a
+  new session there
+- Agent tabs use short names, so the tab row fits on one line
 - README: a keybinding to toggle the panel (`SUPER + A`)
 - New session view (`n` or +): every folder an agent has worked in, last used
   first, or a path you type; starts an installed agent there, by default the

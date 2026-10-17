@@ -26,7 +26,7 @@ Panel {
   readonly property var host: hostWidget || ({
     agents: [], sessions: [], home: "", loaded: false, busy: false, opening: "", runningCount: 0,
     needsYouCount: 0, statusMessage: "", errorMessage: "", now: 0, summary: "", maxSessions: 200,
-    refreshSeconds: 5, notifyNeedsYou: true, folders: []
+    refreshSeconds: 5, notifyNeedsYou: true, folders: [], projects: []
   })
 
   readonly property color foreground: root.barForeground
@@ -35,6 +35,23 @@ Panel {
 
   property string tab: "all"
   property int cursorIndex: 0
+
+  // The Projects tab lists projects; Enter opens one to list its sessions.
+  property string openProject: ""
+  property int projectCursor: 0
+  readonly property bool listingProjects: tab === "projects" && openProject === ""
+  readonly property var visibleProjects: Model.filterProjects(root.host.projects, searchField.text, root.host.home)
+
+  function enterProject() {
+    if (!visibleProjects.length) return
+    openProject = visibleProjects[Math.min(projectCursor, visibleProjects.length - 1)].path
+    searchField.text = ""
+    cursorIndex = 0
+  }
+  function leaveProject() {
+    openProject = ""
+    searchField.text = ""
+  }
 
   // "sessions" (the list), "new" (start a session) or "settings".
   property string view: "sessions"
@@ -63,19 +80,21 @@ Panel {
     else save({ maxSessions: Math.max(20, Math.min(2000, root.host.maxSessions + dx * 20)) })
   }
 
-  // "All", "Running" while anything runs, and one tab per agent that has
-  // sessions on this computer.
+  // "All", "Running" while anything runs, "Projects", and one tab per agent
+  // that has sessions on this computer.
   readonly property var tabs: {
     var list = [{ value: "all", label: "All" }]
     if (root.host.runningCount > 0) list.push({ value: "running", label: "Running " + root.host.runningCount })
+    if (root.host.projects.length > 1) list.push({ value: "projects", label: "Projects" })
     for (var i = 0; i < root.host.agents.length; i++) {
       var a = root.host.agents[i]
-      if (a.count > 0) list.push({ value: a.id, label: a.name })
+      // Short names ("Claude", not "Claude Code") keep the row on one line.
+      if (a.count > 0) list.push({ value: a.id, label: Model.agentShortName(a.id) })
     }
     return list
   }
 
-  readonly property var visibleSessions: Model.filter(root.host.sessions, root.tab, searchField.text, root.host.maxSessions)
+  readonly property var visibleSessions: Model.filter(root.host.sessions, root.tab, searchField.text, root.host.maxSessions, root.openProject)
 
   // ---- New session: a folder (one you've used, or a path you type) and an
   // installed agent, by default the one you used there last.
@@ -124,6 +143,10 @@ Panel {
   }
 
   function moveCursor(dy) {
+    if (listingProjects) {
+      projectCursor = Math.max(0, Math.min(visibleProjects.length - 1, projectCursor + dy))
+      return
+    }
     if (visibleSessions.length === 0) return
     cursorIndex = Math.max(0, Math.min(visibleSessions.length - 1, cursorIndex + dy))
   }
@@ -135,6 +158,10 @@ Panel {
     }
     if (showSettings) {
       if (settingsCursor === 1) adjustSetting(1)
+      return
+    }
+    if (listingProjects) {
+      enterProject()
       return
     }
     if (visibleSessions.length && root.hostWidget) root.hostWidget.openSession(visibleSessions[cursorIndex])
@@ -159,7 +186,11 @@ Panel {
   property string selectedKey: ""
   function keyOf(s) { return s ? s.agent + "/" + s.id : "" }
 
-  onTabChanged: cursorIndex = 0
+  onTabChanged: {
+    cursorIndex = 0
+    projectCursor = 0
+    openProject = ""
+  }
   // The Running tab disappears when the last session ends.
   onTabsChanged: if (!tabs.some(function(t) { return t.value === root.tab })) tab = "all"
   onVisibleSessionsChanged: {
@@ -181,6 +212,7 @@ Panel {
       if (root.hostWidget) root.hostWidget.refresh()
       if (root.hostWidget) root.hostWidget.errorMessage = ""
       view = "sessions"
+      openProject = ""
       // An agent waiting on you is why you opened this: start on it, so
       // Enter switches straight to its window.
       if (root.host.needsYouCount > 0) tab = "running"
@@ -207,6 +239,7 @@ Panel {
       blocked: searchField.activeFocus || refreshField.field.activeFocus || maxField.field.activeFocus
       onCloseRequested: {
         if (root.view !== "sessions") root.toggleView(root.view)
+        else if (root.openProject !== "") root.leaveProject()
         else root.close()
       }
       onTabRequested: function(direction) { root.switchPanel(direction) }
@@ -225,7 +258,12 @@ Panel {
       onActivateRequested: root.activate()
       onTextKey: function(text) {
         if (text === "s" && !root.showNew) root.toggleView("settings")
-        else if (text === "n" && !root.showSettings) root.toggleView("new")
+        else if (text === "n" && !root.showSettings) {
+          // Inside a project, a new session starts there.
+          var here = root.view === "sessions" ? root.openProject : ""
+          root.toggleView("new")
+          if (here !== "" && root.showNew) searchField.text = Model.shortPath(here, root.host.home)
+        }
         else if (text === "/" && !root.showSettings) searchFocusTimer.restart()
         else if (root.view !== "sessions") return
         else if (text === "r" && root.hostWidget) root.hostWidget.refresh()
@@ -314,11 +352,12 @@ Panel {
           id: searchField
           visible: !root.showSettings
           width: parent.width
-          placeholderText: root.showNew ? "Filter folders, or type a path like ~/Projects/new (/)" : "Search titles and folders (/)"
+          placeholderText: root.showNew ? "Filter folders, or type a path like ~/Projects/new (/)"
+            : root.listingProjects ? "Search projects (/)" : "Search titles and folders (/)"
           foreground: root.foreground
           font.family: root.fontFamily
           onAccepted: { root.endSearch(false); root.activate() }
-          onTextChanged: root.newCursor = 0
+          onTextChanged: { root.newCursor = 0; root.projectCursor = 0 }
           Keys.onEscapePressed: function(event) { root.endSearch(true); event.accepted = true }
           Keys.onDownPressed: function(event) { root.endSearch(false); event.accepted = true }
         }
@@ -335,7 +374,7 @@ Panel {
         }
 
         Text {
-          visible: root.host.loaded && root.visibleSessions.length === 0 && root.view === "sessions"
+          visible: root.host.loaded && root.visibleSessions.length === 0 && root.view === "sessions" && !root.listingProjects
           width: parent.width
           textFormat: Text.PlainText
           text: searchField.text.trim() !== "" ? "No sessions match \"" + searchField.text.trim() + "\"."
@@ -346,11 +385,56 @@ Panel {
           wrapMode: Text.WordWrap
         }
 
+        // The open project: its path, and the way back.
+        Text {
+          visible: root.view === "sessions" && root.openProject !== ""
+          width: parent.width
+          textFormat: Text.PlainText
+          text: "PROJECT · " + Model.shortPath(root.openProject, root.host.home)
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          font.letterSpacing: 1
+          elide: Text.ElideMiddle
+        }
+
+        ListView {
+          id: projectList
+          width: parent.width
+          height: Math.min(contentHeight, Style.space(440))
+          visible: root.view === "sessions" && root.listingProjects && root.visibleProjects.length > 0
+          clip: true
+          spacing: Style.space(2)
+          boundsBehavior: Flickable.StopAtBounds
+          model: root.visibleProjects
+          currentIndex: root.projectCursor
+          onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
+          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+          delegate: ProjectRow {
+            required property var modelData
+            required property int index
+            width: projectList.width
+            project: modelData
+            rowIndex: index
+          }
+        }
+
+        Text {
+          visible: root.view === "sessions" && root.listingProjects && root.visibleProjects.length === 0
+          width: parent.width
+          textFormat: Text.PlainText
+          text: "No projects match \"" + searchField.text.trim() + "\"."
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+          wrapMode: Text.WordWrap
+        }
+
         ListView {
           id: sessionList
           width: parent.width
           height: Math.min(contentHeight, Style.space(440))
-          visible: root.visibleSessions.length > 0 && root.view === "sessions"
+          visible: root.visibleSessions.length > 0 && root.view === "sessions" && !root.listingProjects
           clip: true
           spacing: Style.space(2)
           boundsBehavior: Flickable.StopAtBounds
@@ -454,12 +538,81 @@ Panel {
           textFormat: Text.PlainText
           text: root.showSettings ? "↑↓ select · ←→ change · Enter toggle · s or Esc back"
             : root.showNew ? "↑↓ folder · ←→ agent · Enter start · / filter or type a path · Esc back"
+            : root.listingProjects ? "↑↓ select · Enter open project · ←→ tab · / search · n new · s settings"
+            : root.openProject !== "" ? "↑↓ select · Enter resume or switch · n new here · Esc back"
             : "↑↓ select · ←→ tab · Enter resume or switch · / search · n new · s settings"
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
         }
+      }
+    }
+  }
+
+  component ProjectRow: CursorSurface {
+    id: prow
+    property var project: ({})
+    property int rowIndex: 0
+    readonly property bool needsYou: project.needsYou > 0
+
+    hasCursor: root.projectCursor === rowIndex
+    foreground: root.foreground
+    opacity: project.exists === false ? 0.55 : 1
+    implicitHeight: prowContent.implicitHeight + Style.spacing.rowPaddingX
+
+    MouseArea {
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onContainsMouseChanged: if (containsMouse) root.projectCursor = prow.rowIndex
+      onClicked: { root.projectCursor = prow.rowIndex; root.enterProject() }
+    }
+
+    ColumnLayout {
+      id: prowContent
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: Style.space(10)
+      anchors.rightMargin: Style.space(10)
+      spacing: Style.space(1)
+
+      RowLayout {
+        Layout.fillWidth: true
+        spacing: Style.space(6)
+        Text {
+          visible: prow.project.running > 0
+          textFormat: Text.PlainText
+          text: "●"
+          color: prow.needsYou ? Color.urgent : Color.accent
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          Layout.alignment: Qt.AlignVCenter
+        }
+        Text {
+          Layout.fillWidth: true
+          textFormat: Text.PlainText
+          text: Model.projectName(prow.project, root.host.home)
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+          elide: Text.ElideRight
+        }
+      }
+      Text {
+        Layout.fillWidth: true
+        textFormat: Text.PlainText
+        text: Model.shortPath(prow.project.path, root.host.home)
+          + " · " + Model.plural(prow.project.sessions, "session", "sessions")
+          + " · " + Model.agentList(prow.project.agents)
+          + (prow.needsYou ? " · " + prow.project.needsYou + (prow.project.needsYou === 1 ? " needs you" : " need you")
+            : prow.project.running > 0 ? " · " + prow.project.running + " running"
+            : " · " + Model.relativeTime(prow.project.updated, root.host.now))
+        color: prow.needsYou ? Color.urgent : root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideMiddle
       }
     }
   }
@@ -567,7 +720,7 @@ Panel {
       Text {
         Layout.fillWidth: true
         textFormat: Text.PlainText
-        text: (root.tab === "all" || root.tab === "running" ? Model.agentShortName(row.session.agent) + " · " : "")
+        text: (root.tab === "all" || root.tab === "running" || root.tab === "projects" ? Model.agentShortName(row.session.agent) + " · " : "")
           + Model.shortPath(row.session.cwd, root.host.home)
           + (row.session.branch ? " (" + row.session.branch + ")" : "")
           + (row.missing ? " · folder missing" : "")

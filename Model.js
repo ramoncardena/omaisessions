@@ -62,14 +62,15 @@ function agentShortName(id) {
   }
 }
 
-// Sessions for one tab ("all", "running" or an agent id), narrowed by a
-// free-text query that matches the title or the folder.
-function filter(sessions, tab, query, limit) {
+// Sessions for one tab ("all", "running", "projects" with the open project,
+// or an agent id), narrowed by a free-text query on the title or the folder.
+function filter(sessions, tab, query, limit, project) {
   var q = String(query || "").trim().toLowerCase()
   var result = []
   for (var i = 0; i < sessions.length && result.length < limit; i++) {
     var s = sessions[i]
-    if (tab === "running" ? !s.running : tab !== "all" && s.agent !== tab) continue
+    if (tab === "projects") { if (s.project !== project) continue }
+    else if (tab === "running" ? !s.running : tab !== "all" && s.agent !== tab) continue
     if (q !== "" && String(s.title).toLowerCase().indexOf(q) < 0 && String(s.cwd).toLowerCase().indexOf(q) < 0) continue
     result.push(s)
   }
@@ -98,8 +99,29 @@ function folderChoices(folders, query, home) {
     if (typed && f.path !== exact && f.path.indexOf(asPath) !== 0) continue
     result.push(f)
   }
-  // Known folders that match come first while you're still typing.
-  if (typed && !result.some(function(f) { return f.path === exact }))
-    result.push({ path: exact, typed: true })
+  // The folder the path names comes first; other known folders under it
+  // follow, and a folder you've never used is offered after them.
+  var named = -1
+  for (var j = 0; j < result.length; j++) if (result[j].path === exact) named = j
+  if (named > 0) result.unshift(result.splice(named, 1)[0])
+  if (typed && named < 0) result.push({ path: exact, typed: true })
   return result
+}
+
+// Projects narrowed by a query on their name or path.
+function filterProjects(projects, query, home) {
+  var q = String(query || "").trim().toLowerCase()
+  return projects.filter(function(p) {
+    return q === "" || String(p.name).toLowerCase().indexOf(q) >= 0 || shortPath(p.path, home).toLowerCase().indexOf(q) >= 0
+  })
+}
+
+// "omAiSessions", or "Home" for the home folder itself.
+function projectName(p, home) {
+  return p.path === home ? "Home" : p.name
+}
+
+// Agent names, most recently used first: "Claude, Codex".
+function agentList(ids) {
+  return (ids || []).map(agentShortName).join(", ")
 }

@@ -926,8 +926,10 @@ def collect():
             sessions.append({"id": sid, "cwd": cwd, "branch": "", "title": "New session", "new": True,
                              "agent": agent_id, "updated": started_at(pid), "running": True, "pid": pid})
     sessions.sort(key=lambda s: s["updated"], reverse=True)
+    projects = {}
     for s in sessions:
         s["exists"] = os.path.isdir(s["cwd"])
+        s["project"] = project_of(s["cwd"], projects)
         if s["running"] and hasattr(AGENTS[s["agent"]], "status"):
             try:
                 found = AGENTS[s["agent"]].status(s)
@@ -1033,6 +1035,52 @@ def notify_waiting(sessions):
         os.close(lock)
 
 
+def project_of(cwd, cache):
+    """The project a folder belongs to: the git repository it is in (a
+    worktree counts as its main repository), else the folder itself."""
+    if cwd in cache:
+        return cache[cwd]
+    project = cwd
+    path = cwd
+    while path and path != os.path.dirname(path):
+        git = os.path.join(path, ".git")
+        if os.path.isdir(git):
+            project = path
+            break
+        if os.path.isfile(git):
+            # A worktree's .git file points into the main repository:
+            # "gitdir: <main>/.git/worktrees/<name>".
+            try:
+                with open(git, encoding="utf-8", errors="replace") as f:
+                    line = f.readline(4096).strip()
+            except OSError:
+                line = ""
+            target = line[len("gitdir:"):].strip() if line.startswith("gitdir:") else ""
+            marker = os.sep + ".git" + os.sep + "worktrees" + os.sep
+            project = target.split(marker)[0] if marker in target and os.path.isabs(target) else path
+            break
+        path = os.path.dirname(path)
+    cache[cwd] = project
+    return project
+
+
+def projects_of(sessions):
+    """Sessions grouped by project, most recently active first."""
+    projects = {}
+    for s in sessions:  # newest first
+        p = projects.get(s["project"])
+        if p is None:
+            p = projects[s["project"]] = {"path": s["project"], "name": os.path.basename(s["project"]) or s["project"],
+                                          "updated": s["updated"], "sessions": 0, "running": 0, "needsYou": 0,
+                                          "agents": [], "exists": os.path.isdir(s["project"])}
+        p["sessions"] += 1
+        p["running"] += 1 if s["running"] else 0
+        p["needsYou"] += 1 if s.get("state") == "waiting" else 0
+        if s["agent"] not in p["agents"]:
+            p["agents"].append(s["agent"])  # most recently used first
+    return list(projects.values())
+
+
 def folders_of(sessions, limit=200):
     """Every folder an agent has worked in, last used first, with the agent
     used there last: the choices for starting a new session."""
@@ -1064,7 +1112,8 @@ def cmd_list(args):
     if limit:
         sessions = sessions[:limit]
     out({"ok": True, "home": str(HOME), "generated": int(time.time()), "agents": agents,
-         "folders": folders_of(sessions), "sessions": [public(s) for s in sessions]})
+         "folders": folders_of(sessions), "projects": projects_of(sessions),
+         "sessions": [public(s) for s in sessions]})
 
 
 def window_for(pid):

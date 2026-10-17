@@ -10,8 +10,11 @@ resuming it.
 
 ## Features
 
-- One tab per agent (Claude Code, Codex, Grok, Cursor, OpenCode), plus **All** and
-  **Running** tabs
+- One tab per agent (Claude Code, Codex, Grok, Cursor, OpenCode), plus **All**,
+  **Running** and **Projects** tabs
+- Projects: sessions grouped by git repository (subfolders and worktrees
+  count as the repository) or by folder outside git, across every agent;
+  `Enter` opens one, `n` starts a new session there
 - Sessions that are open right now show what they're doing: **working**,
   **needs you** (blocked on a permission or a question, with the reason) or
   **your turn** (done), and for how long. The Running tab lists what needs
@@ -42,6 +45,7 @@ resuming it.
 | `Enter` | Resume in a terminal, or switch to it if it's running |
 | `/` | Search (Esc clears, ↓ back to the list) |
 | `r` | Refresh |
+| `Enter` on a project | Its sessions, from every agent (`Esc` back, `n` new session there) |
 | `n` | New session: `↑↓` folder, `←→` agent, `/` filter or type a path, `Enter` start |
 | `s` | Settings (refresh interval, notifications, sessions shown) |
 | `Esc` | Close |

@@ -30,6 +30,7 @@ BarWidget {
   property var agents: []
   property var sessions: []
   property var folders: []          // where agents have worked, last used first
+  property var projects: []         // sessions grouped by git repository or folder
   property string home: ""
   property bool loaded: false
   property string statusMessage: ""
@@ -113,12 +114,13 @@ BarWidget {
         if (result && result.ok) {
           // Unchanged lists are dropped, so the periodic refresh doesn't
           // rebuild the panel's list under the cursor.
-          var key = JSON.stringify([result.agents, result.sessions, result.folders])
+          var key = JSON.stringify([result.agents, result.sessions, result.folders, result.projects])
           if (key !== root.listKey) {
             root.listKey = key
             root.agents = result.agents || []
             root.sessions = result.sessions || []
             root.folders = result.folders || []
+            root.projects = result.projects || []
           }
           root.home = result.home || ""
           root.errorMessage = ""

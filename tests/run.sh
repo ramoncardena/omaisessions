@@ -508,6 +508,22 @@ check "new rejects unknown agents" bash -c "! '$HELPER' new rm '$HOME' >/dev/nul
 odd="$HOME/odd"$'\n'"dir"; mkdir -p "$odd"
 check "new refuses folders with control characters" jq -e '.error | test("control characters")' <<<"$("$HELPER" new claude "$odd")"
 rm -rf "$odd" "$HOME/brand-new"
+# Projects: a git repository with its subfolders and worktrees, else the folder.
+REPO="$HOME/Projects/repo"; WT="$HOME/worktrees/repo-feature"
+mkdir -p "$REPO/.git/worktrees/repo-feature" "$REPO/src/deep" "$WT"
+echo "gitdir: $REPO/.git/worktrees/repo-feature" >"$WT/.git"
+for p in "a1:$REPO" "a2:$REPO/src/deep" "a3:$WT"; do
+  printf '{"type":"user","cwd":"%s","message":{"role":"user","content":"work in %s"}}\n' "${p#*:}" "${p%%:*}" >"$C/aaaaaaaa-0000-0000-0000-0000000000${p%%:*}.jsonl"
+done
+out=$(list)
+proj() { jq -r --arg id "$1" '.sessions[] | select(.id == $id) | .project' <<<"$out"; }
+check "a repository is its own project" test "$(proj aaaaaaaa-0000-0000-0000-0000000000a1)" = "$REPO"
+check "a subfolder belongs to its repository" test "$(proj aaaaaaaa-0000-0000-0000-0000000000a2)" = "$REPO"
+check "a worktree belongs to its main repository" test "$(proj aaaaaaaa-0000-0000-0000-0000000000a3)" = "$REPO"
+check "outside git, the folder is the project" test "$(proj aaaaaaaa-0000-0000-0000-000000000001)" = "$HOME/Projects/my-app"
+check "a project counts its sessions" test "$(jq -r --arg p "$REPO" '.projects[] | select(.path == $p) | [.name, .sessions] | join(" ")' <<<"$out")" = "repo 3"
+check "projects are listed most recent first" test "$(jq -r '.projects[0].path' <<<"$out")" = "$(jq -r '.sessions[0].project' <<<"$out")"
+rm -rf "$REPO" "$HOME/worktrees" "$C"/aaaaaaaa-0000-0000-0000-0000000000a[123].jsonl
 check "unknown command fails" bash -c "! '$HELPER' frobnicate >/dev/null"
 
 echo
