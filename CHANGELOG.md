@@ -2,6 +2,8 @@
 
 ## 0.3.0
 
+- New icon: a robot head whose antenna is a return arrow
+  (`assets/icon.svg`), so it no longer looks like the built-in Agents widget
 - OpenCode sessions, read from its database (`opencode.db`); resume with
   `opencode --session <id>`
 - Codex: a new window in a folder whose closed session the app-server still

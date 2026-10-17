@@ -163,7 +163,12 @@ BarWidget {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: "󰚩"
+    // The plugin's own mark (SessionIcon.qml), in the bar's color.
+    iconComponent: Component {
+      SessionIcon {
+        color: button.active && button.useActiveColor ? button.activeColor : button.foreground
+      }
+    }
     tooltipText: !root.loaded ? "AI sessions"
       : root.runningCount > 0 ? "AI sessions: " + root.runningCount + " running"
       : "AI sessions: " + root.sessions.length
