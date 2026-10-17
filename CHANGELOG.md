@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+- OpenCode sessions, read from its database (`opencode.db`); resume with
+  `opencode --session <id>`
+- Codex: a new window in a folder whose closed session the app-server still
+  holds is paired with the session it opened, not the old one; windows of
+  another `CODEX_HOME` are never paired with these sessions
+
 ## 0.2.1
 
 - Detect running sessions of current Codex (0.162+), which runs them in a

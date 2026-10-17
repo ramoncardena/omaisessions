@@ -212,7 +212,7 @@ Panel {
           visible: root.host.loaded && root.visibleSessions.length === 0
           width: parent.width
           text: searchField.text.trim() !== "" ? "No sessions match \"" + searchField.text.trim() + "\"."
-            : "No sessions yet. Start Claude Code, Codex, Grok or Cursor in any folder and they show up here."
+            : "No sessions yet. Start Claude Code, Codex, Grok, Cursor or OpenCode in any folder and they show up here."
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.body

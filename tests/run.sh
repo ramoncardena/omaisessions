@@ -12,6 +12,7 @@ trap 'rm -rf "$T"' EXIT
 
 export HOME="$T/home" XDG_CACHE_HOME="$T/cache"
 export CLAUDE_CONFIG_DIR="$HOME/.claude" CODEX_HOME="$HOME/.codex" GROK_HOME="$HOME/.grok" CURSOR_CONFIG_DIR="$HOME/.cursor"
+export XDG_DATA_HOME="$HOME/.local/share"
 mkdir -p "$HOME/Projects/app" "$HOME/Projects/my-app" "$T/stub"
 
 # Stub terminal and agents: record the command line, launch nothing.
@@ -19,7 +20,7 @@ cat >"$T/stub/xdg-terminal-exec" <<STUB
 #!/bin/bash
 printf '%s\n' "\$PWD" "\$@" >"$T/launched"
 STUB
-for a in claude codex grok cursor-agent; do printf '#!/bin/bash\n' >"$T/stub/$a"; done
+for a in claude codex grok cursor-agent opencode; do printf '#!/bin/bash\n' >"$T/stub/$a"; done
 chmod +x "$T/stub/"*
 export PATH="$T/stub:/usr/bin"
 
@@ -127,9 +128,43 @@ chat(home + "/Projects/deep/one", "dddddddd-0000-0000-0000-000000000003", {"name
 chat(app, "dddddddd-0000-0000-0000-000000000004", {"name": "New Agent"}, [])
 PY
 
+# ---- OpenCode fixtures: one database for every session, in the shape of
+# opencode 1.19 (session, message and part rows; data is JSON).
+OC="$XDG_DATA_HOME/opencode/opencode.db"; mkdir -p "$(dirname "$OC")"
+python3 - "$OC" "$HOME" <<'PY'
+import json, sqlite3, sys, time
+db = sqlite3.connect(sys.argv[1]); home = sys.argv[2]
+db.executescript("""
+CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, directory TEXT, title TEXT,
+  time_created INTEGER, time_updated INTEGER, time_archived INTEGER);
+CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+CREATE TABLE credential (id TEXT PRIMARY KEY, value TEXT);
+INSERT INTO credential VALUES ('c', 'SECRET-TOKEN');
+""")
+now = int(time.time() * 1000)
+n = 0
+def session(sid, title, parts, parent=None, archived=None, cwd=home + "/Projects/app"):
+    global n
+    db.execute("INSERT INTO session VALUES (?,?,?,?,?,?,?,?)", (sid, "p", parent, cwd, title, now - 9000, now - 5000, archived))
+    for role, part in parts:
+        n += 1
+        db.execute("INSERT INTO message VALUES (?,?,?,?,?)", ("msg%d" % n, sid, n, n, json.dumps({"role": role})))
+        db.execute("INSERT INTO part VALUES (?,?,?,?,?,?)", ("prt%d" % n, "msg%d" % n, sid, n, n, json.dumps(part)))
+session("ses_titled0000000001", "Add an OpenCode tab", [("user", {"type": "text", "text": "add opencode"}), ("assistant", {"type": "text", "text": "ok"})])
+# Still on the placeholder title: the first typed prompt, past a synthetic part.
+session("ses_untitled00000002", "New session - 2026-10-17T10:00:00.000Z",
+        [("user", {"type": "text", "text": "Injected", "synthetic": True}), ("user", {"type": "text", "text": "Write the README"})],
+        cwd=home + "/Projects/my-app")
+session("ses_child00000000003", "Child task", [("user", {"type": "text", "text": "sub"})], parent="ses_titled0000000001")
+session("ses_archived00000004", "Archived", [("user", {"type": "text", "text": "old"})], archived=now)
+session("ses_empty00000000005", "New session - 2026-10-17T11:00:00.000Z", [])
+db.commit(); db.close()
+PY
+
 out=$(list)
 check "list succeeds" test "$(jq -r .ok <<<"$out")" = true
-check "finds resumable sessions only" test "$(jq '.sessions | length' <<<"$out")" = 9
+check "finds resumable sessions only" test "$(jq '.sessions | length' <<<"$out")" = 11
 check "skips subagent transcripts" test -z "$(jq -r '.sessions[] | select(.cwd == "/x") | .id' <<<"$out")"
 check "skips cleared-only claude sessions" test -z "$(field aaaaaaaa-0000-0000-0000-000000000002 id)"
 check "skips codex exec runs" test -z "$(field bbbbbbbb-0000-0000-0000-000000000002 id)"
@@ -145,7 +180,12 @@ check "existing folder flagged" test "$(field aaaaaaaa-0000-0000-0000-0000000000
 check "codex title from session index" test "$(field bbbbbbbb-0000-0000-0000-000000000001 title)" = "Dark mode toggle"
 check "codex branch from git meta" test "$(field bbbbbbbb-0000-0000-0000-000000000001 branch)" = dev
 check "sorted newest first" test "$(jq -r '.sessions[-1].id' <<<"$out")" = cccccccc-0000-0000-0000-000000000001
-check "agent counts" test "$(jq -c '[.agents[] | [.id, .count, .installed]]' <<<"$out")" = '[["claude",3,true],["codex",1,true],["grok",2,true],["cursor",3,true]]'
+check "agent counts" test "$(jq -c '[.agents[] | [.id, .count, .installed]]' <<<"$out")" = '[["claude",3,true],["codex",1,true],["grok",2,true],["cursor",3,true],["opencode",2,true]]'
+check "opencode title" test "$(field ses_titled0000000001 title)" = "Add an OpenCode tab"
+check "opencode folder" test "$(field ses_titled0000000001 cwd)" = "$HOME/Projects/app"
+check "opencode placeholder title falls back to the prompt" test "$(field ses_untitled00000002 title)" = "Write the README"
+check "opencode skips subagent, archived and empty sessions" test -z "$(jq -r '.sessions[] | select(.id == "ses_child00000000003" or .id == "ses_archived00000004" or .id == "ses_empty00000000005") | .id' <<<"$out")"
+check "opencode credentials never leave the database" bash -c "! grep -q SECRET-TOKEN <<<'$out' && ! grep -q SECRET-TOKEN '$XDG_CACHE_HOME/omaisessions/index.json'"
 check "limit" test "$("$HELPER" list --limit 2 | jq '.sessions | length')" = 2
 
 check "grok title from summary" test "$(field cccccccc-0000-0000-0000-000000000001 title)" = "Grok titled"
@@ -191,7 +231,7 @@ check "grok running from active_sessions" test "$(run cccccccc-0000-0000-0000-00
 check "codex running from its open rollout" test "$(run bbbbbbbb-0000-0000-0000-000000000001)" = true
 check "cursor running from its open store" test "$(run dddddddd-0000-0000-0000-000000000003)" = true
 check "others are not running" test "$(jq '[.sessions[] | select(.running)] | length' <<<"$out")" = 4
-check "agent running counts" test "$(jq -c '[.agents[] | .running]' <<<"$out")" = '[1,1,1,1]'
+check "agent running counts" test "$(jq -c '[.agents[] | .running]' <<<"$out")" = '[1,1,1,1,0]'
 
 # Codex named on its command line (`codex resume <id>`), no open file.
 stop
@@ -212,6 +252,19 @@ check "decoy shell is not an agent" test "$(field dddddddd-0000-0000-0000-000000
 spawn bash -c "cd '$HOME/Projects/deep/one' && exec -a cursor-agent sleep 300"
 sleep 1.2; touch "$(ls "$CURSOR_CONFIG_DIR"/chats/*/dddddddd-0000-0000-0000-000000000003/store.db)"
 check "cursor running from its folder" test "$(field dddddddd-0000-0000-0000-000000000003 running)" = true
+stop
+
+# OpenCode: every process holds the shared database open, which says
+# nothing about its session; --session on the command line or the folder does.
+spawn bash -c "cd / && exec 3<'$OC' && exec -a opencode sleep 300"
+sleep 0.3
+check "opencode open database is not a session" test "$(list | jq '[.sessions[] | select(.agent == "opencode" and .running)] | length')" = 0
+spawn bash -c 'exec -a opencode python3 -c "import time; time.sleep(300)" --session ses_untitled00000002'
+sleep 0.3
+check "opencode running from --session" test "$(field ses_untitled00000002 running)" = true
+spawn bash -c "cd '$HOME/Projects/app' && exec -a opencode sleep 300"
+sleep 1.2; python3 -c "import sqlite3,sys,time; d=sqlite3.connect(sys.argv[1]); d.execute('UPDATE session SET time_updated=? WHERE id=?', (int(time.time()*1000), 'ses_titled0000000001')); d.commit()" "$OC"
+check "opencode running from its folder" test "$(field ses_titled0000000001 running)" = true
 spawn bash -c 'cd / && exec -a codex python3 -c "import time; time.sleep(300)" resume bbbbbbbb-0000-0000-0000-000000000001'
 sleep 0.3
 
@@ -251,7 +304,7 @@ new() { jq -r --arg id "$1" '.sessions[] | select(.id == $id) | [.title, .cwd, .
 check "codex client on the locked session in its folder" test "$(jq -r '.sessions[] | select(.id == "bbbbbbbb-0000-0000-0000-000000000001") | [.running, .pid] | join("|")' <<<"$out")" = "true|$c1"
 check "codex client on a new locked session" test "$(new eeeeeeee-0000-0000-0000-000000000001)" = "New session|$HOME/Projects/my-app|true|true|$c2"
 check "grok running before its first prompt" test "$(new cccccccc-0000-0000-0000-00000000000f)" = "New session|$HOME/Projects/my-app|true|true|$$"
-check "new sessions count per agent" test "$(jq -c '[.agents[] | .running]' <<<"$out")" = '[0,2,1,0]'
+check "new sessions count per agent" test "$(jq -c '[.agents[] | .running]' <<<"$out")" = '[0,2,1,0,0]'
 kill "$c1" "$c2"; sleep 0.2
 # A new client in a folder whose closed session is still loaded: it is on
 # the session it locked when it started, not the old one.
@@ -287,7 +340,7 @@ echo '{not json' >>"$f"
 check "bad lines are skipped" test "$(field aaaaaaaa-0000-0000-0000-000000000001 title)" = "Renamed later"
 
 # No history at all.
-check "empty home lists nothing" test "$(HOME="$T/empty" CLAUDE_CONFIG_DIR="$T/empty/.claude" CODEX_HOME="$T/empty/.codex" GROK_HOME="$T/empty/.grok" CURSOR_CONFIG_DIR="$T/empty/.cursor" "$HELPER" list | jq '.sessions | length')" = 0
+check "empty home lists nothing" test "$(HOME="$T/empty" XDG_DATA_HOME="$T/empty/.local/share" CLAUDE_CONFIG_DIR="$T/empty/.claude" CODEX_HOME="$T/empty/.codex" GROK_HOME="$T/empty/.grok" CURSOR_CONFIG_DIR="$T/empty/.cursor" "$HELPER" list | jq '.sessions | length')" = 0
 
 # Opening.
 out=$("$HELPER" open claude aaaaaaaa-0000-0000-0000-000000000001 "$HOME/Projects/my-app")
@@ -304,6 +357,9 @@ check "grok resume command" test "$(tail -n 4 "$T/launched" | tr '\n' ' ')" = "-
 rm -f "$T/launched"
 "$HELPER" open cursor dddddddd-0000-0000-0000-000000000001 "$HOME/Projects/app" >/dev/null; sleep 0.3
 check "cursor resume command" test "$(tail -n 4 "$T/launched" | tr '\n' ' ')" = "-e cursor-agent --resume dddddddd-0000-0000-0000-000000000001 "
+rm -f "$T/launched"
+"$HELPER" open opencode ses_titled0000000001 "$HOME/Projects/app" >/dev/null; sleep 0.3
+check "opencode resume command" test "$(tail -n 4 "$T/launched" | tr '\n' ' ')" = "-e opencode --session ses_titled0000000001 "
 check "open rejects a missing folder" bash -c "! '$HELPER' open claude aaaaaaaa-0000-0000-0000-000000000003 '$HOME/gone' >/dev/null"
 check "open rejects relative folders" bash -c "! '$HELPER' open claude aaaaaaaa-0000-0000-0000-000000000001 Projects >/dev/null"
 check "open rejects option-like ids" bash -c "! '$HELPER' open claude --dangerously-skip-permissions '$HOME' >/dev/null"

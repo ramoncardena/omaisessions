@@ -2,7 +2,7 @@
 
 Every coding-agent conversation on this computer, in one Omarchy bar panel.
 
-Claude Code, Codex, Grok and Cursor keep their history per folder: to resume a
+Claude Code, Codex, Grok, Cursor and OpenCode keep their history per folder: to resume a
 conversation you have to remember where you started it and launch the agent
 there. omAiSessions lists them all, from every folder, newest first. Pick one
 and it opens a terminal in that conversation's folder with the agent already
@@ -10,14 +10,14 @@ resuming it.
 
 ## Features
 
-- One tab per agent (Claude Code, Codex, Grok, Cursor), plus **All** and
+- One tab per agent (Claude Code, Codex, Grok, Cursor, OpenCode), plus **All** and
   **Running** tabs
 - Sessions that are open right now are marked, and the bar icon lights up
   while any agent is running. Picking a running session switches to its
   window instead of opening a second copy (two copies writing one session
   would corrupt it)
 - Titles from the agent's own naming (`/rename`, AI titles, Codex thread
-  names, Grok and Cursor titles), falling back to your first prompt
+  names, Grok, Cursor and OpenCode titles), falling back to your first prompt
 - Folder, git branch and last activity for each session; sessions whose folder
   was deleted are flagged
 - Search across titles and folders
@@ -58,10 +58,14 @@ and prints JSON for the panel:
 | Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (or `$CODEX_HOME`) | `codex resume <id>` | a `codex` window, matched to the sessions `codex app-server` holds locks for |
 | Grok | `~/.grok/sessions/<folder>/<id>/summary.json` (or `$GROK_HOME`) | `grok --resume <id>` | `~/.grok/active_sessions.json` |
 | Cursor | `~/.cursor/chats/<md5 of folder>/<id>/store.db` (or `$CURSOR_CONFIG_DIR`) | `cursor-agent --resume <id>` | process with the store open |
+| OpenCode | `~/.local/share/opencode/opencode.db` (or `$XDG_DATA_HOME`) | `opencode --session <id>` | `opencode --session <id>`, or the newest session in its folder |
 
 Cursor names each chat's directory after an md5 of its folder, so the folder
 is recovered by matching that hash: against paths inside the chat, then the
 folders other agents know about, then your home directory a few levels deep.
+OpenCode keeps every session in one SQLite database, which also holds its
+login tokens; only the session, message and part tables are read.
+
 Registry entries are checked against the live process (pid and start time),
 so a crashed agent never shows as running. A session you just started has no
 history until its first prompt, so there is nothing to resume yet; while it

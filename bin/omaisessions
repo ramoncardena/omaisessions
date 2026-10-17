@@ -492,7 +492,80 @@ class Cursor:
         return [self.binary, "--resume", sid]
 
 
-AGENTS = {a.id: a for a in (Claude(), Codex(), Grok(), Cursor())}
+# ------------------------------------------------------------------ OpenCode
+
+
+class OpenCode:
+    id = "opencode"
+    name = "OpenCode"
+    binary = "opencode"
+
+    shared_store = True
+
+    # Titles OpenCode gives a session until it names it from the first prompt.
+    PLACEHOLDER = re.compile(r"^(New|Child) session - \d{4}-")
+
+    def files(self):
+        # One SQLite database for every session (opencode.db; release
+        # channels get opencode-<channel>.db).
+        root = Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local" / "share") / "opencode"
+        return [p for p in root.glob("opencode*.db") if p.is_file()] if root.is_dir() else []
+
+    def read(self, path):
+        # Only the session, message and part tables are read; the same
+        # database holds OpenCode's account tokens and credentials.
+        try:
+            db = sqlite3.connect("file:" + str(path) + "?mode=ro", uri=True, timeout=1)
+        except sqlite3.Error:
+            return None
+        sessions = []
+        try:
+            rows = db.execute(
+                "SELECT id, directory, title, time_updated FROM session"
+                " WHERE parent_id IS NULL AND time_archived IS NULL").fetchall()
+            for sid, cwd, title, updated in rows:
+                first = self.first_prompt(db, sid)
+                # A session with no prompt has nothing to resume. Subagent
+                # sessions (parent_id) and archived ones are hidden by
+                # OpenCode's own picker too.
+                if first is None or not cwd:
+                    continue
+                name = title if title and not self.PLACEHOLDER.match(title) else first
+                session = {"id": sid, "cwd": cwd, "branch": "", "title": one_line(name)}
+                if updated:
+                    session["updated"] = int(updated) // 1000
+                sessions.append(session)
+        except sqlite3.Error:
+            return None
+        finally:
+            db.close()
+        return sessions
+
+    @staticmethod
+    def first_prompt(db, sid):
+        rows = db.execute(
+            "SELECT p.data FROM part p JOIN message m ON m.id = p.message_id"
+            " WHERE m.session_id = ? AND json_extract(m.data, '$.role') = 'user'"
+            " ORDER BY m.time_created, p.time_created LIMIT 20", (sid,))
+        for (data,) in rows:
+            part = loads(data)
+            if isinstance(part, dict) and part.get("type") == "text" and not part.get("synthetic"):
+                text = part.get("text") or ""
+                if not is_noise(text):
+                    return text
+        return None
+
+    def running(self):
+        return {}  # no registry: found by argv (--session <id>) or folder
+
+    def matches(self, argv):
+        return program_is(argv, "opencode")
+
+    def command(self, sid):
+        return [self.binary, "--session", sid]
+
+
+AGENTS = {a.id: a for a in (Claude(), Codex(), Grok(), Cursor(), OpenCode())}
 
 
 def resolve_cursor_folders(sessions, known, cache_paths):
@@ -543,7 +616,9 @@ def find_running(sessions):
         for sid, (pid, cwd) in agent.running().items():
             running[(agent.id, sid)] = (pid, cwd)
 
-    by_path = {s["_path"]: s for s in sessions}
+    # An open file only identifies a session when it holds just that one,
+    # not a store shared by every session (OpenCode's database).
+    by_path = {s["_path"]: s for s in sessions if not getattr(AGENTS[s["agent"]], "shared_store", False)}
     dirs = {os.path.dirname(p): s for p, s in by_path.items() if s["agent"] in ("cursor", "grok")}
     ids = {(s["agent"], s["id"]) for s in sessions}
     cwds = {(s["agent"], s["id"]): s["cwd"] for s in sessions}
@@ -700,15 +775,16 @@ def collect():
                 except OSError:
                     continue
             fresh[key] = {"mtime": mtime, "size": size, "session": session}
-            if not session:
-                continue
-            item = dict(session)
-            if hasattr(agent, "title"):
-                item["title"] = agent.title(session)
-            item["agent"] = agent.id
-            item["updated"] = int(session.get("updated") or mtime / 1e9)
-            item["_path"] = key
-            sessions.append(item)
+            # Most agents keep one file per session; OpenCode keeps them all
+            # in one database, whose reader returns a list.
+            for found in session if isinstance(session, list) else [session] if session else []:
+                item = dict(found)
+                if hasattr(agent, "title"):
+                    item["title"] = agent.title(found)
+                item["agent"] = agent.id
+                item["updated"] = int(found.get("updated") or mtime / 1e9)
+                item["_path"] = key
+                sessions.append(item)
 
     known = {s["cwd"] for s in sessions if s.get("cwd")}
     cached_paths = dict(paths)

@@ -30,6 +30,7 @@ function agentShortName(id) {
     case "codex": return "Codex"
     case "grok": return "Grok"
     case "cursor": return "Cursor"
+    case "opencode": return "OpenCode"
     default: return String(id || "")
   }
 }
