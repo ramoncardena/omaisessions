@@ -78,6 +78,14 @@ BarWidget {
     openProc.running = true
   }
 
+  function revealFolder(folder) {
+    if (!folder || openProc.running) return
+    errorMessage = ""
+    opening = ""
+    openProc.command = [helperPath, "reveal", folder]
+    openProc.running = true
+  }
+
   // Writes this widget's settings into the bar config (shell.json); they come
   // back through `settings`, so every monitor's instance picks them up.
   function saveSettings(changes) {

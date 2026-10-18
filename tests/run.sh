@@ -27,6 +27,9 @@ for a in omarchy-notification-send notify-send; do
   printf '#!/bin/bash\nprintf "%%s\\n" "$@" >>"%s/notified-%s"\n' "$T" "$a" >"$T/stub/$a"
 done
 printf '#!/bin/bash\n' >"$T/stub/omarchy-shell"
+# The app launcher runs its command here; the file manager records the folder.
+printf '#!/bin/bash\n[ "$1" = -- ] && shift\nexec "$@"\n' >"$T/stub/uwsm-app"
+printf '#!/bin/bash\nprintf "%%s\\n" "$@" >"%s/revealed"\n' "$T" >"$T/stub/xdg-open"
 chmod +x "$T/stub/"*
 export PATH="$T/stub:/usr/bin"
 
@@ -508,6 +511,17 @@ check "new rejects unknown agents" bash -c "! '$HELPER' new rm '$HOME' >/dev/nul
 odd="$HOME/odd"$'\n'"dir"; mkdir -p "$odd"
 check "new refuses folders with control characters" jq -e '.error | test("control characters")' <<<"$("$HELPER" new claude "$odd")"
 rm -rf "$odd" "$HOME/brand-new"
+# Reveal: a folder in the file manager, nothing else.
+rm -f "$T/revealed"
+out=$("$HELPER" reveal "$HOME/Projects/app"); sleep 0.2
+check "reveal opens the folder" test "$(cat "$T/revealed" 2>/dev/null)" = "$HOME/Projects/app"
+check "reveal reports the folder" test "$(jq -r .message <<<"$out")" = "Opened ~/Projects/app"
+touch "$HOME/Projects/app/file.txt"; rm -f "$T/revealed"
+check "reveal refuses a file" bash -c "! '$HELPER' reveal '$HOME/Projects/app/file.txt' >/dev/null"
+check "reveal refuses a relative path" bash -c "! '$HELPER' reveal Projects >/dev/null"
+check "reveal refuses a missing folder" bash -c "! '$HELPER' reveal '$HOME/nope' >/dev/null"
+check "a refused reveal opens nothing" test ! -e "$T/revealed"
+rm -f "$HOME/Projects/app/file.txt"
 # Projects: a git repository with its subfolders and worktrees, else the folder.
 REPO="$HOME/Projects/repo"; WT="$HOME/worktrees/repo-feature"
 mkdir -p "$REPO/.git/worktrees/repo-feature" "$REPO/src/deep" "$WT"

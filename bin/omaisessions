@@ -12,6 +12,7 @@ message without parsing stderr.
   omaisessions open <agent> <id> <cwd>   resume a session in a terminal in <cwd>,
                                          or focus its window if it is running
   omaisessions new <agent> <folder>      start a new session in <folder>
+  omaisessions reveal <folder>           open <folder> in the file manager
 
 Agents keep their history per folder, in their own internal formats, so each
 one gets a small reader below. Readers only extract what the panel shows
@@ -1215,10 +1216,28 @@ def cmd_new(args):
     launch(agent, os.path.normpath(folder), [agent.binary], "Starting " + agent.name + " in ")
 
 
+def cmd_reveal(args):
+    if len(args) != 1:
+        fail("usage: reveal <folder>")
+    folder = args[0]
+    # A folder only: xdg-open on a file would run its default app.
+    if not os.path.isabs(folder) or not os.path.isdir(folder):
+        fail("Folder doesn't exist: " + folder)
+    opener = ["xdg-open", os.path.normpath(folder)]
+    if shutil.which("uwsm-app"):
+        opener = ["uwsm-app", "--"] + opener
+    try:
+        subprocess.Popen(opener, start_new_session=True,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as e:
+        fail("Could not open the folder: " + str(e))
+    out({"ok": True, "message": "Opened " + short_home(folder)})
+
+
 def main(argv):
     if not argv:
-        fail("usage: omaisessions <list|open|new> ...")
-    commands = {"list": cmd_list, "open": cmd_open, "new": cmd_new}
+        fail("usage: omaisessions <list|open|new|reveal> ...")
+    commands = {"list": cmd_list, "open": cmd_open, "new": cmd_new, "reveal": cmd_reveal}
     command = commands.get(argv[0])
     if not command:
         fail("Unknown command: " + argv[0])

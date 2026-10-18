@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Open a project's folder in the file manager: Open folder in its heading,
+  or `o` in Projects
 - Projects tab: sessions grouped by git repository (a subfolder or a
   worktree counts as its repository) or by folder, with their agents and
   what's running or needs you; open one to see its sessions, `n` to start a

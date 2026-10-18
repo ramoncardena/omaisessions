@@ -50,6 +50,12 @@ Panel {
     searchField.text = ""
     cursorIndex = 0
   }
+  // The open project, or the selected one in the list, in the file manager.
+  function revealProject() {
+    var path = openProject !== "" ? openProject
+      : listingProjects && visibleProjects.length ? visibleProjects[Math.min(projectCursor, visibleProjects.length - 1)].path : ""
+    if (path !== "" && root.hostWidget) root.hostWidget.revealFolder(path)
+  }
   function leaveProject() {
     openProject = ""
     searchField.text = ""
@@ -286,6 +292,7 @@ Panel {
         else if (text === "/" && !root.showSettings) searchFocusTimer.restart()
         else if (root.view !== "sessions") return
         else if (text === "r" && root.hostWidget) root.hostWidget.refresh()
+        else if (text === "o" && root.tab === "projects") root.revealProject()
         else if (text === "a") root.cycleAgent(1)
         else if (text >= "1" && text <= "9" && Number(text) <= root.agentChips.length) root.agentFilter = root.agentChips[Number(text) - 1].value
       }
@@ -447,7 +454,8 @@ Panel {
               id: backLabel
               anchors.left: backArrow.right
               anchors.leftMargin: Style.space(4)
-              anchors.right: parent.right
+              anchors.right: folderButton.left
+              anchors.rightMargin: Style.space(8)
               textFormat: Text.PlainText
               text: "PROJECTS · " + Model.shortPath(root.openProject, root.host.home)
               color: backArea.containsMouse ? root.foreground : root.dim
@@ -462,6 +470,25 @@ Panel {
               hoverEnabled: true
               cursorShape: Qt.PointingHandCursor
               onClicked: root.leaveProject()
+            }
+            // Opens the project folder in the file manager (o).
+            Text {
+              id: folderButton
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              textFormat: Text.PlainText
+              text: "\u{F0770} OPEN FOLDER"
+              color: folderArea.containsMouse ? root.foreground : root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.letterSpacing: 1
+              MouseArea {
+                id: folderArea
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.revealProject()
+              }
             }
           }
         }
@@ -628,8 +655,8 @@ Panel {
           textFormat: Text.PlainText
           text: root.showSettings ? "↑↓ select · ←→ change · Enter toggle · s or Esc back"
             : root.showNew ? "↑↓ folder · ←→ agent · Enter start · / filter or type a path · Esc back"
-            : root.listingProjects ? "↑↓ select · Enter open · ←→ view · a agent · / search · n new · s settings"
-            : root.openProject !== "" ? "↑↓ select · Enter resume or switch · a agent · n new here · Esc back"
+            : root.listingProjects ? "↑↓ select · Enter open · o folder · ←→ view · a agent · / search · n new"
+            : root.openProject !== "" ? "↑↓ select · Enter resume or switch · o folder · n new here · Esc back"
             : "↑↓ select · Enter resume or switch · ←→ view · a agent · / search · n new · s settings"
           color: root.dim
           font.family: root.fontFamily

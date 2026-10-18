@@ -16,7 +16,7 @@ resuming it.
   first, then what's done, then what's working
 - Projects: sessions grouped by git repository (subfolders and worktrees
   count as the repository) or by folder outside git, across every agent;
-  `Enter` opens one, `n` starts a new session there
+  `Enter` opens one, `n` starts a new session there, `o` opens its folder
 - Sessions that are open right now show what they're doing: **working**,
   **needs you** (blocked on a permission or a question, with the reason) or
   **your turn** (done), and for how long. The Running tab lists what needs
@@ -49,6 +49,7 @@ resuming it.
 | `/` | Search (Esc clears, ↓ back to the list) |
 | `r` | Refresh |
 | `Enter` on a project | Its sessions, from every agent (`Esc` back, `n` new session there) |
+| `o` on a project | Open its folder in the file manager |
 | `n` | New session: `↑↓` folder, `←→` agent, `/` filter or type a path, `Enter` start |
 | `s` | Settings (refresh interval, notifications, sessions shown) |
 | `Esc` | Close |
@@ -160,6 +161,8 @@ Agent history is never modified.
   with the agent's own resume command when you pick a session, or the bare
   agent command when you start a new one (in a folder that must exist).
 - `hyprctl`, to find and focus a running session's window.
+- `xdg-open` on a project folder, when you ask to open it (only a folder
+  that exists, never a file).
 - `omarchy-notification-send` (or `notify-send` elsewhere), when an agent
   starts waiting on you, if enabled. Its click action is
   `omarchy-shell shell summon` for this panel, passed as data, never a shell
