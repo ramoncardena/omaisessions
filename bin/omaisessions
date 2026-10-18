@@ -39,6 +39,8 @@ from datetime import datetime
 from pathlib import Path
 
 CACHE_VERSION = 2
+# A Cursor folder the home walk couldn't find is looked for again this often.
+MISS_RETRY = 3600
 HOME = Path.home()
 CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME") or HOME / ".cache") / "omaisessions"
 CACHE_FILE = CACHE_DIR / "index.json"
@@ -772,19 +774,33 @@ class OpenCode:
 AGENTS = {a.id: a for a in (Claude(), Codex(), Grok(), Cursor(), OpenCode())}
 
 
-def resolve_cursor_folders(sessions, known, cache_paths):
+def resolve_cursor_folders(sessions, known, cache_paths, misses):
     """Fill in Cursor folders that their blobs didn't reveal.
 
     Cursor names a chat's directory after the md5 of its folder, so any folder
     that hashes the same is the answer: try every folder the other agents
-    know about, then the home directory a few levels deep.
+    know about, then the home directory a few levels deep. A hash the walk
+    didn't find (the folder was deleted or moved) is remembered in `misses`,
+    so a refresh doesn't walk the home folder again for an hour.
     """
     pending = [s for s in sessions if s["agent"] == "cursor" and not s.get("cwd")]
+    for h in [h for h in misses if h not in {s["folderHash"] for s in pending}]:
+        del misses[h]
     if not pending:
         return
-    def candidates():
-        yield from cache_paths.values()
-        yield from known
+    want = {s["folderHash"] for s in pending}
+
+    def take(candidates):
+        for path in candidates:
+            h = md5_path(path)
+            if h in want:
+                cache_paths[h] = path
+                misses.pop(h, None)
+                want.discard(h)
+                if not want:
+                    return
+
+    def home_dirs():
         yield str(HOME)
         for top, dirs, _ in os.walk(HOME):
             depth = top[len(str(HOME)):].count(os.sep)
@@ -792,14 +808,14 @@ def resolve_cursor_folders(sessions, known, cache_paths):
             if depth >= 3:
                 dirs[:] = []
             yield top
-    want = {s["folderHash"] for s in pending}
-    for path in candidates():
-        h = md5_path(path)
-        if h in want:
-            cache_paths[h] = path
-            want.discard(h)
-            if not want:
-                break
+
+    take(list(cache_paths.values()) + list(known))
+    now = int(time.time())
+    walk_for = {h for h in want if now - int(misses.get(h) or 0) >= MISS_RETRY}
+    if walk_for:
+        take(home_dirs())
+        for h in walk_for & want:
+            misses[h] = now
     for s in pending:
         s["cwd"] = cache_paths.get(s["folderHash"])
 
@@ -929,18 +945,20 @@ def load_cache():
         with open(CACHE_FILE, encoding="utf-8") as f:
             data = json.load(f)
         if data.get("version") == CACHE_VERSION and isinstance(data.get("files"), dict):
-            return data["files"], data.get("paths") if isinstance(data.get("paths"), dict) else {}
+            paths, misses = data.get("paths"), data.get("misses")
+            return data["files"], paths if isinstance(paths, dict) else {}, misses if isinstance(misses, dict) else {}
     except (OSError, ValueError):
         pass
-    return {}, {}
+    return {}, {}, {}
 
 
-def save_cache(files, paths):
+def save_cache(files, paths, misses):
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=CACHE_DIR, prefix=".index.")
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"version": CACHE_VERSION, "files": files, "paths": paths}, f, ensure_ascii=False, separators=(",", ":"))
+            json.dump({"version": CACHE_VERSION, "files": files, "paths": paths, "misses": misses}, f,
+                      ensure_ascii=False, separators=(",", ":"))
         os.replace(tmp, CACHE_FILE)
     except OSError:
         pass  # a missing cache only costs speed
@@ -963,7 +981,7 @@ def stamp(path):
 
 
 def collect():
-    cache, paths = load_cache()
+    cache, paths, misses = load_cache()
     fresh = {}
     sessions = []
     agents = []
@@ -999,13 +1017,13 @@ def collect():
                 sessions.append(item)
 
     known = {s["cwd"] for s in sessions if s.get("cwd")}
-    cached_paths = dict(paths)
-    resolve_cursor_folders(sessions, known, paths)
+    cached_paths, cached_misses = dict(paths), dict(misses)
+    resolve_cursor_folders(sessions, known, paths, misses)
     sessions = [s for s in sessions if s.get("cwd")]
     sessions.sort(key=lambda s: s["updated"], reverse=True)
 
-    if fresh != cache or paths != cached_paths:
-        save_cache(fresh, paths)
+    if fresh != cache or paths != cached_paths or misses != cached_misses:
+        save_cache(fresh, paths, misses)
 
     running = find_running(sessions)
     listed = {(s["agent"], s["id"]) for s in sessions}

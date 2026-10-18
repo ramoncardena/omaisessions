@@ -209,6 +209,22 @@ check "cursor name from metadata" test "$(field dddddddd-0000-0000-0000-00000000
 check "cursor folder from the home walk" test "$(field dddddddd-0000-0000-0000-000000000003 cwd)" = "$HOME/Projects/deep/one"
 check "cursor skips untitled empty chats" test -z "$(field dddddddd-0000-0000-0000-000000000004 id)"
 check "cursor folders are cached" test "$(jq '.paths | length' "$XDG_CACHE_HOME/omaisessions/index.json")" -ge 1
+# A chat whose folder is gone: not listed, and remembered as not found so the
+# home folder isn't walked again on every refresh.
+python3 - "$CURSOR_CONFIG_DIR/chats" <<'PY'
+import hashlib, json, os, sqlite3, sys
+d = os.path.join(sys.argv[1], hashlib.md5(b"/nowhere/deleted-folder").hexdigest(), "dddddddd-0000-0000-0000-000000000005")
+os.makedirs(d)
+db = sqlite3.connect(os.path.join(d, "store.db"))
+db.executescript("CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB); CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);")
+db.execute("INSERT INTO meta VALUES ('0', ?)", (json.dumps({"name": "Lost chat"}).encode().hex(),))
+db.commit(); db.close()
+PY
+check "cursor chat with no folder is not listed" test -z "$(field dddddddd-0000-0000-0000-000000000005 id)"
+check "a folder the walk can't find is remembered" test "$(jq '.misses | length' "$XDG_CACHE_HOME/omaisessions/index.json")" = 1
+miss_at=$(jq -r '.misses | to_entries[0].value' "$XDG_CACHE_HOME/omaisessions/index.json")
+list >/dev/null
+check "a remembered miss is not looked for again" test "$(jq -r '.misses | to_entries[0].value' "$XDG_CACHE_HOME/omaisessions/index.json")" = "$miss_at"
 check "nothing running yet" test "$(list | jq '[.sessions[] | select(.running)] | length')" = 0
 
 # ---- Running sessions, simulated by stand-in processes named after the
