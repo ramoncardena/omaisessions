@@ -2,11 +2,14 @@
 
 Every coding-agent conversation on this computer, in one Omarchy bar panel.
 
-Claude Code, Codex, Grok, Cursor and OpenCode keep their history per folder: to resume a
-conversation you have to remember where you started it and launch the agent
-there. omAiSessions lists them all, from every folder, newest first. Pick one
-and it opens a terminal in that conversation's folder with the agent already
-resuming it.
+![The omAiSessions panel: sessions that need you, are done or are working pinned under Active, recent ones from every agent below](preview.png)
+
+Claude Code, Codex, Grok, Cursor and OpenCode keep their history per folder: to
+resume a conversation you have to remember where you started it and launch the
+agent there. omAiSessions lists them all, from every folder, newest first. Pick
+one and it opens a terminal in that conversation's folder with the agent already
+resuming it. While agents run, the bar icon tells you whether one is working or
+waiting on you.
 
 ## Features
 
@@ -19,8 +22,7 @@ resuming it.
   `Enter` opens one, `n` starts a new session there, `o` opens its folder
 - Sessions that are open right now show what they're doing: **working**,
   **needs you** (blocked on a permission or a question, with the reason) or
-  **your turn** (done), and for how long. The Running tab lists what needs
-  you first
+  **your turn** (done), and for how long
 - The bar icon takes the accent color while agents run and the urgent color
   while one needs you; opening the panel then lands on that session, so
   Enter switches straight to its window
@@ -39,6 +41,24 @@ resuming it.
   themselves (what you typed and what the agent answered) once you pause:
   sessions that mention it follow, with the words around the match
 - Keyboard-first: works without touching the mouse
+
+## Screenshots
+
+The sessions and folders in these screenshots are demo data.
+
+| | |
+|---|---|
+| ![Sessions view: Active sessions with needs you, your turn and working states, then Recent sessions from Claude, Codex, OpenCode and Grok](docs/screenshots/sessions.png) | ![Projects view: repositories with their session count, the agents used there, and what is running or needs you](docs/screenshots/projects.png) |
+| **Sessions.** Running sessions under Active, needs-you first; everything else below, newest first. | **Projects.** Sessions grouped by repository, with the agents used there and what's running. |
+| ![Inside a project: its sessions from every agent, with Open folder in the heading](docs/screenshots/project.png) | ![Search for "redis": two conversations mention it, each with the sentence around the match](docs/screenshots/search.png) |
+| **Inside a project.** Its sessions from every agent; `n` starts a new one there, `o` opens the folder. | **Search.** Titles and folders as you type; after a pause, the conversations that mention the words, with the excerpt. |
+| ![New session: agent chips and the folders agents have worked in, last used first](docs/screenshots/new-session.png) | ![Settings: refresh interval, notifications toggle and sessions to show](docs/screenshots/settings.png) |
+| **New session.** Any folder an agent has worked in, or a path you type, with the agent you used there last. | **Settings.** Refresh interval, notifications and how many sessions to show, saved to your bar config. |
+
+![The bar icon in the urgent color while an agent needs you, and in the accent color while agents work](docs/screenshots/bar-icon.png)
+
+The bar icon: urgent while an agent needs you (top), accent while agents work
+(bottom), the bar's normal color otherwise.
 
 ## Keys
 
@@ -67,25 +87,39 @@ Press `s` (or the gear) in the panel. Changes are saved to your bar config
 | Notify when an agent needs you | on | One desktop notification per wait |
 | Sessions to show | 200 | |
 
+## Requirements
+
+- Omarchy 4 (the shell with plugin support)
+- `python3` (standard library only), `xdg-terminal-exec`, `hyprctl` and
+  `xdg-open`; `uwsm-app` and `omarchy-notification-send` are used when present.
+  All of them ship with Omarchy.
+- Any of the agents, installed and on the shell's `PATH`: `claude`, `codex`,
+  `grok`, `cursor-agent`, `opencode`. Agents that aren't installed are still
+  listed; only resuming needs the binary.
+
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/ramoncardena/omaisessions
+omarchy plugin add https://github.com/ramoncardena/omaisessions --enable
 ```
 
-To open it with a key, add a binding to `~/.config/hypr/bindings.lua`
-(`SUPER + A` is free in Omarchy's defaults):
+The widget lands in the bar's right section. To open it with a key, add a
+binding to `~/.config/hypr/bindings.lua` (`SUPER + A` is free in Omarchy's
+defaults):
 
 ```lua
 o.bind("SUPER + A", "AI sessions", "omarchy-shell shell toggle io.github.ramoncardena.omaisessions")
 ```
 
-For development, from a clone:
+## Remove
 
 ```bash
-scripts/dev-sync.sh    # validate, copy into ~/.config/omarchy/plugins, enable
-tests/run.sh           # helper tests against fixture histories
+omarchy plugin remove io.github.ramoncardena.omaisessions --yes
+rm -r ~/.cache/omaisessions   # the cache it leaves behind
 ```
+
+Removing (or disabling) the widget also drops its settings from
+`~/.config/omarchy/shell.json`. Agent history is never touched.
 
 ## How it works
 
@@ -113,8 +147,10 @@ What a running session is doing comes from the agent's own records:
 Cursor names each chat's directory after an md5 of its folder, so the folder
 is recovered by matching that hash: against paths inside the chat, then the
 folders other agents know about, then your home directory a few levels deep.
-OpenCode keeps every session in one SQLite database, which also holds its
-login tokens; only the session, message and part tables are read.
+A hash that can't be matched (the folder was deleted or moved) is remembered
+for an hour, so the home walk doesn't repeat on every refresh. OpenCode keeps
+every session in one SQLite database, which also holds its login tokens; only
+the session, message and part tables are read.
 
 Registry entries are checked against the live process (pid and start time),
 so a crashed agent never shows as running. A session you just started has no
@@ -148,20 +184,20 @@ everything omAiSessions touches, so you can check it before enabling it.
   first prompts and folders are extracted, except when you search inside
   conversations: then the messages are read to find the words, and only
   the matching sessions and a short excerpt reach the panel. The excerpt is
-  shown, never stored. OpenCode's database also holds its
-  login tokens; only its `session`, `message` and `part` tables are queried,
-  read-only.
+  shown, never stored. OpenCode's database also holds its login tokens; only
+  its `session`, `message` and `part` tables are queried, read-only.
 - `/proc`, to tell which sessions are running: for your own processes only,
-  each one's command line,
-  working folder, start time and open file paths. For `codex` processes only,
-  the environment is read to find `CODEX_HOME` (it can hold API keys; only
-  `CODEX_HOME` and `HOME` are used, and nothing from it is kept or shown).
+  each one's command line, working folder, start time and open file paths.
+  For `codex` processes only, the environment is read to find `CODEX_HOME`
+  (it can hold API keys; only `CODEX_HOME` and `HOME` are used, and nothing
+  from it is kept or shown).
 - Your home folder's directory names, up to three levels deep, only to match
   a Cursor chat to its folder.
 
 **Writes**
 - `~/.cache/omaisessions/index.json` (mode `600`): the extracted titles and
-  first prompts, so a refresh doesn't re-read unchanged files.
+  first prompts, plus which Cursor chat folders could not be found, so a
+  refresh doesn't re-read unchanged files or walk your home folder again.
 - `~/.cache/omaisessions/notified.json` and `notify.lock`: which waits were
   already announced, so each one notifies once.
 - Its own settings in `~/.config/omarchy/shell.json`, through the shell,
@@ -194,17 +230,25 @@ settings apply, exactly as when you resume it by hand; each agent's own
 folder-trust prompts still apply. Titles can be written by the agent's model
 from what it read, so treat them as labels, not as trusted text.
 
-**Dependencies:** `python3` (standard library only), `xdg-terminal-exec`,
-`hyprctl`; all ship with Omarchy.
-
-**Removing** the plugin leaves its cache behind; delete it with
-`rm -r ~/.cache/omaisessions`.
-
 ## IPC
 
 ```bash
 omarchy-shell io.github.ramoncardena.omaisessions toggle   # open | close | refresh
 ```
+
+`refresh` reaches the widget on every monitor.
+
+## Development
+
+```bash
+scripts/dev-sync.sh    # validate, copy into ~/.config/omarchy/plugins, enable
+tests/run.sh           # helper tests against fixture histories; nothing real is touched
+mkdir -p /tmp/qslint && ln -sfn "$OMARCHY_PATH/shell" /tmp/qslint/qs
+/usr/lib/qt6/bin/qmllint -I /tmp/qslint BarWidget.qml Panel.qml SessionIcon.qml
+```
+
+The screenshots above come from demo histories built for them, so they can be
+retaken without anyone's real sessions.
 
 ## License
 
