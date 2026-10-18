@@ -1,7 +1,17 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
 
+- Settings: a value already at its bound (`→` at 300 s, `←` at 20 sessions)
+  no longer reports a failed save
+- The bar icon toggles the panel on left click only
+- Footer hints wrap instead of being cut off
+- `omarchy-shell io.github.ramoncardena.omaisessions refresh` refreshes every
+  monitor's widget, not just one
+- A Cursor chat whose folder can't be found is remembered for an hour, so the
+  home folder isn't walked again on every refresh
+- Preview and README screenshots, taken from demo histories; the README
+  documents removal and every tool the plugin runs
 - Search inside conversations: after a pause in typing, sessions whose
   messages (yours or the agent's) have every word follow the title matches,
   with the words around the match; phrase matches rank first
