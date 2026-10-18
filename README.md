@@ -35,7 +35,9 @@ resuming it.
   names, Grok, Cursor and OpenCode titles), falling back to your first prompt
 - Folder, git branch and last activity for each session; sessions whose folder
   was deleted are flagged
-- Search across titles and folders
+- Search across titles and folders as you type, and inside the conversations
+  themselves (what you typed and what the agent answered) once you pause:
+  sessions that mention it follow, with the words around the match
 - Keyboard-first: works without touching the mouse
 
 ## Keys
@@ -46,7 +48,7 @@ resuming it.
 | `←` `→` / `h` `l` | Sessions / Projects |
 | `a`, `1`–`9` | Next agent chip / pick a chip (`1` is All) |
 | `Enter` | Resume in a terminal, or switch to it if it's running |
-| `/` | Search (Esc clears, ↓ back to the list) |
+| `/` | Search titles, folders and conversations (Esc clears, ↓ back to the list) |
 | `r` | Refresh |
 | `Enter` on a project | Its sessions, from every agent (`Esc` back, `n` new session there) |
 | `o` on a project | Open its folder in the file manager |
@@ -119,6 +121,14 @@ so a crashed agent never shows as running. A session you just started has no
 history until its first prompt, so there is nothing to resume yet; while it
 runs it is listed as "New session", so you can still switch to its window.
 
+Searching inside conversations (`omaisessions search <words>`) reads the
+transcripts when you search, after a short pause in typing. A session matches
+when every word starts a word somewhere in it, in a message you typed or the
+agent's answer; tool calls, tool output, injected context and Claude's
+compaction summaries are skipped. The query as a phrase ranks first, then
+the words in order, then all of them in one message. Nothing is indexed or
+stored: each search scans again (about 0.3 s for 50 MB of history).
+
 It only reads history; it never changes it. Results are cached in
 `~/.cache/omaisessions/` by file mtime, so a refresh only re-reads files that
 changed. Terminals open with the same app-id as `omarchy agent`
@@ -135,7 +145,10 @@ everything omAiSessions touches, so you can check it before enabling it.
 
 **Reads**
 - The agents' history folders listed above. Only the session list, titles,
-  first prompts and folders are extracted. OpenCode's database also holds its
+  first prompts and folders are extracted, except when you search inside
+  conversations: then the messages are read to find the words, and only
+  the matching sessions and a short excerpt reach the panel. The excerpt is
+  shown, never stored. OpenCode's database also holds its
   login tokens; only its `session`, `message` and `part` tables are queried,
   read-only.
 - `/proc`, to tell which sessions are running: for your own processes only,

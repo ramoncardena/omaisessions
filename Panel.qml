@@ -105,9 +105,28 @@ Panel {
     agentFilter = agentChips[(i + step + agentChips.length) % agentChips.length].value
   }
 
+  // Sessions whose conversation has the query, once the helper has searched
+  // for exactly what is typed.
+  readonly property string query: searchField.text.trim()
+  readonly property bool searchesContent: view === "sessions" && !listingProjects && query.length >= 3
+  readonly property var contentHits: searchesContent && root.host.contentQuery === query ? root.host.contentHits : null
+  readonly property int mentionedShown: contentHits
+    ? visibleSessions.filter(function(s) { return root.contentHits[s.agent + "/" + s.id] !== undefined }).length : 0
+
+  // Searching inside conversations starts once typing pauses.
+  Timer {
+    id: contentSearchTimer
+    interval: 350
+    onTriggered: if (root.hostWidget) root.hostWidget.searchContent(root.searchesContent ? root.query : "")
+  }
+  onQueryChanged: {
+    if (root.searchesContent) contentSearchTimer.restart()
+    else if (root.hostWidget) root.hostWidget.searchContent("")
+  }
+
   // Active sessions (needs you, your turn, working) first, then the rest.
   readonly property var visibleSessions: Model.filter(root.host.sessions, root.agentFilter, searchField.text,
-    root.host.maxSessions, root.tab === "projects" ? root.openProject : "")
+    root.host.maxSessions, root.tab === "projects" ? root.openProject : "", root.contentHits)
   readonly property int activeShown: visibleSessions.filter(function(s) { return s.running }).length
 
   // ---- New session: a folder (one you've used, or a path you type) and an
@@ -403,7 +422,7 @@ Panel {
             visible: !root.showSettings
             width: parent.width
             placeholderText: root.showNew ? "Filter folders, or type a path like ~/Projects/new (/)"
-              : root.listingProjects ? "Search projects (/)" : "Search titles and folders (/)"
+              : root.listingProjects ? "Search projects (/)" : "Search titles, folders and conversations (/)"
             foreground: root.foreground
             font.family: root.fontFamily
             onAccepted: { root.endSearch(false); root.activate() }
@@ -423,8 +442,23 @@ Panel {
             wrapMode: Text.WordWrap
           }
 
+          // What the search inside conversations found.
+          Text {
+            visible: root.searchesContent
+            width: parent.width
+            textFormat: Text.PlainText
+            text: root.host.searching ? "Searching inside conversations…"
+              : root.mentionedShown === 0 ? "No conversation mentions \u201c" + root.query + "\u201d"
+              : Model.plural(root.mentionedShown, "conversation mentions", "conversations mention") + " \u201c" + root.query + "\u201d"
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            elide: Text.ElideRight
+          }
+
           Text {
             visible: root.host.loaded && root.visibleSessions.length === 0 && root.view === "sessions" && !root.listingProjects
+              && !root.searchesContent
             width: parent.width
             textFormat: Text.PlainText
             text: searchField.text.trim() !== "" ? "No sessions match \"" + searchField.text.trim() + "\"."
@@ -820,6 +854,8 @@ Panel {
     property int rowIndex: 0
     readonly property bool missing: session.exists === false
     readonly property bool waiting: session.running === true && session.state === "waiting"
+    // Where the conversation mentions the search, when it does.
+    readonly property var hit: root.contentHits ? root.contentHits[session.agent + "/" + session.id] : undefined
 
     hasCursor: root.cursorIndex === rowIndex
     foreground: root.foreground
@@ -877,6 +913,20 @@ Panel {
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
         elide: Text.ElideMiddle
+      }
+      Text {
+        visible: row.hit !== undefined
+        Layout.fillWidth: true
+        textFormat: Text.PlainText
+        text: row.hit ? (row.hit.role === "user" ? "You: " : Model.agentShortName(row.session.agent) + ": ") + row.hit.snippet : ""
+        color: root.foreground
+        opacity: 0.8
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        font.italic: true
+        wrapMode: Text.Wrap
+        maximumLineCount: 2
+        elide: Text.ElideRight
       }
     }
   }

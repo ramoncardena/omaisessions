@@ -63,22 +63,29 @@ function agentShortName(id) {
 }
 
 // Sessions for one agent ("all" or an agent id), optionally inside one
-// project, narrowed by a free-text query on the title or the folder. Running
-// sessions come first, by what needs you (needs you, your turn, working);
-// the rest stay newest first.
-function filter(sessions, agent, query, limit, project) {
+// project, narrowed by a free-text query on the title or the folder, or found
+// inside the conversation (hits: the helper's search, keyed "agent/id").
+// Running sessions come first, by what needs you (needs you, your turn,
+// working); then title and folder matches newest first, then the rest.
+function filter(sessions, agent, query, limit, project, hits) {
   var q = String(query || "").trim().toLowerCase()
-  var active = [], rest = []
+  var active = [], named = [], said = []
   for (var i = 0; i < sessions.length; i++) {
     var s = sessions[i]
     if (project && s.project !== project) continue
     if (agent !== "all" && s.agent !== agent) continue
-    if (q !== "" && String(s.title).toLowerCase().indexOf(q) < 0 && String(s.cwd).toLowerCase().indexOf(q) < 0) continue
-    ;(s.running ? active : rest).push(s)
+    var inName = q === "" || String(s.title).toLowerCase().indexOf(q) >= 0 || String(s.cwd).toLowerCase().indexOf(q) >= 0
+    var hit = hits ? hits[s.agent + "/" + s.id] : undefined
+    if (!inName && !hit) continue
+    // Running sessions first; then title or folder matches, then sessions
+    // that only mention the query, best match first.
+    ;(s.running ? active : inName ? named : said).push(s)
   }
   // Stable: within a rank, newest first as listed.
   var ranked = active.map(function(s, i) { return { s: s, i: i } })
   ranked.sort(function(a, b) { return attentionRank(a.s) - attentionRank(b.s) || a.i - b.i })
+  said.sort(function(a, b) { return hits[a.agent + "/" + a.id].order - hits[b.agent + "/" + b.id].order })
+  var rest = named.concat(said)
   return ranked.map(function(r) { return r.s }).concat(rest.slice(0, Math.max(0, limit - active.length)))
 }
 

@@ -39,6 +39,13 @@ BarWidget {
   property string opening: ""       // session id being launched
   property string listKey: ""       // last list as JSON, to skip no-op updates
 
+  // Search inside conversations: the helper's matches for contentQuery,
+  // keyed "agent/id". One search runs at a time; the latest query wins.
+  property string contentQuery: ""
+  property var contentHits: ({})
+  property string wantedQuery: ""
+  readonly property bool searching: searchProc.running || (wantedQuery !== "" && wantedQuery !== contentQuery)
+
   readonly property bool busy: listProc.running || openProc.running
   readonly property int runningCount: sessions.filter(function(s) { return s.running }).length
   readonly property int needsYouCount: sessions.filter(function(s) { return s.running && s.state === "waiting" }).length
@@ -84,6 +91,19 @@ BarWidget {
     opening = ""
     openProc.command = [helperPath, "reveal", folder]
     openProc.running = true
+  }
+
+  function searchContent(query) {
+    var q = String(query || "").trim()
+    wantedQuery = q.length >= 3 ? q : ""
+    if (wantedQuery === "") {
+      contentQuery = ""
+      contentHits = ({})
+      return
+    }
+    if (searchProc.running) return  // rerun for wantedQuery when it ends
+    searchProc.command = [helperPath, "search", wantedQuery]
+    searchProc.running = true
   }
 
   // Writes this widget's settings into the bar config (shell.json); they come
@@ -136,6 +156,27 @@ BarWidget {
           root.errorMessage = result && result.error ? result.error : "Could not read agent sessions"
         }
         root.loaded = true
+      }
+    }
+  }
+
+  Process {
+    id: searchProc
+    stdout: StdioCollector { id: searchOut; waitForEnd: true }
+    onExited: function(exitCode) {
+      var ran = searchProc.command[2]
+      var result = root.parse(searchOut.text)
+      if (ran === root.wantedQuery) {
+        var hits = {}
+        var matches = result && result.ok ? result.matches || [] : []
+        for (var i = 0; i < matches.length; i++) {
+          var m = matches[i]
+          hits[m.agent + "/" + m.id] = { snippet: m.snippet, role: m.role, hits: m.hits, order: i }
+        }
+        root.contentHits = hits
+        root.contentQuery = ran
+      } else if (root.wantedQuery !== "") {
+        Qt.callLater(function() { root.searchContent(root.wantedQuery) })
       }
     }
   }

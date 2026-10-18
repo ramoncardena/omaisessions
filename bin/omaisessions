@@ -13,6 +13,9 @@ message without parsing stderr.
                                          or focus its window if it is running
   omaisessions new <agent> <folder>      start a new session in <folder>
   omaisessions reveal <folder>           open <folder> in the file manager
+  omaisessions search <query>            sessions whose conversation (what you
+                                         typed and what the agent answered)
+                                         has every word of <query>
 
 Agents keep their history per folder, in their own internal formats, so each
 one gets a small reader below. Readers only extract what the panel shows
@@ -76,6 +79,16 @@ def text_of(content):
             if isinstance(part, dict) and part.get("type") in ("text", "input_text"):
                 return part.get("text") or ""
     return ""
+
+
+def texts_of(content):
+    """Every text part of a message: what was said, not tool calls or output."""
+    if isinstance(content, str):
+        return [content]
+    if isinstance(content, list):
+        return [part.get("text") or "" for part in content
+                if isinstance(part, dict) and part.get("type") in ("text", "input_text", "output_text")]
+    return []
 
 
 def read_lines(path):
@@ -246,6 +259,20 @@ class Claude:
         branch = "" if not branch or branch == "HEAD" else branch
         return {"id": sid, "cwd": cwd, "branch": branch, "title": one_line(custom or ai or first)}
 
+    def transcript(self, session, keep):
+        for raw in read_lines(session["_path"]):
+            if not keep(raw):
+                continue
+            entry = loads(raw)
+            # A compaction summary retells the conversation in Claude's words.
+            if not isinstance(entry, dict) or entry.get("isMeta") or entry.get("isSidechain") or entry.get("isCompactSummary"):
+                continue
+            role = entry.get("type")
+            if role in ("user", "assistant"):
+                for text in texts_of((entry.get("message") or {}).get("content")):
+                    if not (role == "user" and is_noise(text)):
+                        yield role, text
+
     def running(self):
         # Every interactive claude writes sessions/<pid>.json with the session
         # it is on, kept current across /clear and /resume, and its status.
@@ -329,6 +356,20 @@ class Codex:
         # The title is resolved on every list (names can change without the
         # rollout file changing), so only the fallback is cached.
         return {"id": meta["id"], "cwd": meta["cwd"], "branch": git.get("branch") or "", "title": one_line(first)}
+
+    def transcript(self, session, keep):
+        for raw in read_lines(session["_path"]):
+            if not keep(raw) or b'"response_item"' not in raw:
+                continue
+            entry = loads(raw)
+            payload = entry.get("payload") if isinstance(entry, dict) else None
+            if not isinstance(payload, dict) or payload.get("type") != "message":
+                continue
+            role = payload.get("role")
+            if role in ("user", "assistant"):
+                for text in texts_of(payload.get("content")):
+                    if not (role == "user" and is_noise(text)):
+                        yield role, text
 
     def title(self, session):
         name = self.names().get(session["id"])
@@ -438,6 +479,24 @@ class Grok:
         if updated:
             session["updated"] = updated
         return session
+
+    def transcript(self, session, keep):
+        # Injected context arrives as user messages too: those carry a
+        # synthetic_reason, and what you typed sits in <user_query>.
+        for raw in read_lines(Path(session["_path"]).parent / "chat_history.jsonl"):
+            if not keep(raw):
+                continue
+            entry = loads(raw)
+            if not isinstance(entry, dict) or "synthetic_reason" in entry:
+                continue
+            role = entry.get("type")
+            if role in ("user", "assistant"):
+                for text in texts_of(entry.get("content")):
+                    if role == "user":
+                        m = re.search(r"<user_query>\s*(.*?)\s*(?:</user_query>|$)", text, re.S)
+                        text = m.group(1) if m else "" if is_noise(text) else text
+                    if text:
+                        yield role, text
 
     def status(self, session):
         # events.jsonl logs turn_started / turn_ended and, in between,
@@ -569,6 +628,24 @@ class Cursor:
             text = m.group(1)
         return None if is_noise(text) else text
 
+    def transcript(self, session, keep):
+        db = sqlite3.connect("file:" + session["_path"] + "?mode=ro", uri=True, timeout=1)
+        try:
+            for (data,) in db.execute("SELECT data FROM blobs"):
+                if not isinstance(data, bytes) or not keep(data):
+                    continue
+                message = loads(data)
+                role = message.get("role") if isinstance(message, dict) else None
+                if role == "user":
+                    text = self.user_text(data)
+                    if text:
+                        yield role, text
+                elif role == "assistant":
+                    for text in texts_of(message.get("content")):
+                        yield role, text
+        finally:
+            db.close()
+
     def running(self):
         return {}  # found through the open store.db (see find_running)
 
@@ -643,6 +720,23 @@ class OpenCode:
                 if not is_noise(text):
                     return text
         return None
+
+    def transcript(self, session, keep):
+        db = sqlite3.connect("file:" + session["_path"] + "?mode=ro", uri=True, timeout=1)
+        try:
+            rows = db.execute(
+                "SELECT json_extract(m.data, '$.role'), p.data FROM part p JOIN message m ON m.id = p.message_id"
+                " WHERE m.session_id = ? ORDER BY m.time_created, p.time_created", (session["id"],))
+            for role, data in rows:
+                if role not in ("user", "assistant") or not keep(data.encode() if isinstance(data, str) else data):
+                    continue
+                part = loads(data)
+                if isinstance(part, dict) and part.get("type") == "text" and not part.get("synthetic"):
+                    text = part.get("text") or ""
+                    if not (role == "user" and is_noise(text)):
+                        yield role, text
+        finally:
+            db.close()
 
     def status(self, session):
         # A turn is over once the latest assistant message has completed
@@ -1234,10 +1328,84 @@ def cmd_reveal(args):
     out({"ok": True, "message": "Opened " + short_home(folder)})
 
 
+SEARCH_LIMIT = 200
+
+
+def snippet(text, match):
+    """The words around a match, on one line."""
+    start, end = max(0, match.start() - 40), min(len(text), match.end() + 90)
+    while start > 0 and not text[start - 1].isspace() and match.start() - start < 60:
+        start -= 1
+    part = " ".join(text[start:end].split())
+    return ("…" if start > 0 else "") + part + ("…" if end < len(text) else "")
+
+
+def search_session(agent, session, patterns, phrases, keep):
+    """Where a session's conversation has every word, or None. Its rank:
+    3 when a message has the query itself, 2 when it has the words in order
+    (each one perhaps the start of a longer word), 1 when one message has
+    them all, 0 when they are spread over the conversation."""
+    found, hits, best = set(), 0, None
+    for role, text in agent.transcript(session, keep):
+        present = [i for i, p in enumerate(patterns) if p.search(text)]
+        if not present:
+            continue
+        hits += 1
+        found.update(present)
+        match, rank = None, 0
+        if len(present) == len(patterns):
+            exact, ordered = phrases[0].search(text), phrases[1].search(text)
+            match, rank = (exact, 3) if exact else (ordered, 2) if ordered else (None, 1)
+        # The excerpt: the first message that ranks best, else the first
+        # with the most of the words.
+        key = (rank, len(present))
+        if best is None or key > best[0]:
+            best = (key, role, text, match or patterns[present[0]].search(text))
+    if len(found) < len(patterns):
+        return None
+    return {"agent": agent.id, "id": session["id"], "hits": hits, "rank": best[0][0],
+            "role": "user" if best[1] == "user" else "agent", "snippet": snippet(best[2], best[3])}
+
+
+def cmd_search(args):
+    if len(args) != 1:
+        fail("usage: search <query>")
+    words = args[0].split()[:8]
+    if not words or sum(len(w) for w in words) < 2:
+        fail("Type at least two letters to search inside conversations")
+    # Each word matches where a word starts: "bot" finds "bots", not "robot".
+    patterns = [re.compile(r"(?<!\w)" + re.escape(w), re.I) for w in words]
+    ordered = r"(?<!\w)" + r"\s+".join(re.escape(w) for w in words)
+    phrases = (re.compile(ordered + r"(?!\w)", re.I), re.compile(ordered, re.I))
+    # Only lines with one of the words are parsed. Raw lines hold JSON, so
+    # this byte test is exact only for plain ASCII words (a non-ASCII letter
+    # can be escaped, or differ in case beyond ASCII); otherwise parse all.
+    needles = [w.lower().encode() for w in words]
+    if all(w.isascii() and '"' not in w and "\\" not in w for w in words):
+        keep = lambda raw: any(n in raw.lower() for n in needles)
+    else:
+        keep = lambda raw: True
+    _, sessions = collect()
+    matches = []
+    for s in sessions:
+        agent = AGENTS[s["agent"]]
+        if not s.get("_path") or not hasattr(agent, "transcript"):
+            continue  # a new session has no history yet
+        try:
+            found = search_session(agent, s, patterns, phrases, keep)
+        except (OSError, sqlite3.Error, ValueError, TypeError, AttributeError, KeyError, IndexError, RecursionError):
+            continue  # an unreadable transcript skips that session
+        if found:
+            matches.append(found)
+    # Best rank first; newest first within a rank (sessions come sorted).
+    matches.sort(key=lambda m: -m["rank"])
+    out({"ok": True, "query": args[0], "matches": matches[:SEARCH_LIMIT]})
+
+
 def main(argv):
     if not argv:
-        fail("usage: omaisessions <list|open|new|reveal> ...")
-    commands = {"list": cmd_list, "open": cmd_open, "new": cmd_new, "reveal": cmd_reveal}
+        fail("usage: omaisessions <list|open|new|reveal|search> ...")
+    commands = {"list": cmd_list, "open": cmd_open, "new": cmd_new, "reveal": cmd_reveal, "search": cmd_search}
     command = commands.get(argv[0])
     if not command:
         fail("Unknown command: " + argv[0])

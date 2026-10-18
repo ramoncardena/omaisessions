@@ -538,6 +538,84 @@ check "outside git, the folder is the project" test "$(proj aaaaaaaa-0000-0000-0
 check "a project counts its sessions" test "$(jq -r --arg p "$REPO" '.projects[] | select(.path == $p) | [.name, .sessions] | join(" ")' <<<"$out")" = "repo 3"
 check "projects are listed most recent first" test "$(jq -r '.projects[0].path' <<<"$out")" = "$(jq -r '.sessions[0].project' <<<"$out")"
 rm -rf "$REPO" "$HOME/worktrees" "$C"/aaaaaaaa-0000-0000-0000-0000000000a[123].jsonl
+# Search inside conversations: what you typed and what the agent answered,
+# never tool output, injected context or compaction summaries.
+python3 - "$C" "$X" "$G" "$OC" "$CURSOR_CONFIG_DIR/chats" "$HOME" <<'PY'
+import hashlib, json, os, sqlite3, sys
+claude, codex, grok, oc, chats, home = sys.argv[1:]
+app = home + "/Projects/app"
+def lines(path, entries, compact=True):
+    with open(path, "w") as f:
+        for e in entries:
+            f.write((json.dumps(e, separators=(",", ":")) if compact else json.dumps(e)) + "\n")
+u = lambda text, **kw: dict({"type": "user", "cwd": app, "message": {"role": "user", "content": text}}, **kw)
+a = lambda text: {"type": "assistant", "cwd": app, "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}}
+lines(claude + "/aaaaaaaa-0000-0000-0000-0000000000f1.jsonl", [
+    u("Plan the database work"),
+    a("Here is the walrus migration plan."),
+    u([{"type": "tool_result", "content": "toolonlyword"}]),
+    a("Spread one: pelicanword"),
+    {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "input": {"x": "tooluseword"}}]}},
+    u("<command-name>noiseword</command-name>"),
+    u("Summary: summaryonlyword", isCompactSummary=True),
+    u("Later I typed spreadtwo"),
+])
+lines(codex + "/rollout-2026-10-12T12-00-00-bbbbbbbb-0000-0000-0000-0000000000f2.jsonl", [
+    {"type": "session_meta", "payload": {"id": "bbbbbbbb-0000-0000-0000-0000000000f2", "cwd": app, "source": "cli"}},
+    {"type": "response_item", "payload": {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "devonlyword"}]}},
+    {"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Check the logs"}]}},
+    {"type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Found a heron in the logs"}]}},
+])
+g = grok + "/cccccccc-0000-0000-0000-0000000000f3"
+os.makedirs(g)
+with open(g + "/summary.json", "w") as f:
+    json.dump({"info": {"id": "cccccccc-0000-0000-0000-0000000000f3", "cwd": app}, "generated_title": "Grok search", "num_chat_messages": 4}, f)
+# Grok writes its history with Python's json: spaces, and \u escapes.
+lines(g + "/chat_history.jsonl", [
+    {"type": "user", "content": [{"type": "text", "text": "<system-reminder>syntheticword</system-reminder>"}], "synthetic_reason": "skills"},
+    {"type": "user", "content": [{"type": "text", "text": "<user_info>x</user_info>\n<user_query>\nFind the flamingo at the café\n</user_query>"}], "prompt_index": 0},
+    {"type": "tool_result", "tool_call_id": "t", "content": "groktoolword"},
+    {"type": "assistant", "content": "Done."},
+], compact=False)
+db = sqlite3.connect(oc)
+db.execute("INSERT INTO session VALUES (?,?,?,?,?,?,?,?)", ("ses_search0000000006", "p", None, app, "Search me", 1, 2, None))
+db.execute("INSERT INTO message VALUES (?,?,?,?,?)", ("msg_s1", "ses_search0000000006", 100, 100, json.dumps({"role": "user"})))
+db.execute("INSERT INTO part VALUES (?,?,?,?,?,?)", ("prt_s1", "msg_s1", "ses_search0000000006", 100, 100, json.dumps({"type": "text", "text": "tell me about narwhals"})))
+db.commit(); db.close()
+d = os.path.join(chats, hashlib.md5(app.encode()).hexdigest(), "dddddddd-0000-0000-0000-0000000000f4")
+os.makedirs(d)
+db = sqlite3.connect(os.path.join(d, "store.db"))
+db.executescript("CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB); CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);")
+db.execute("INSERT INTO meta VALUES ('0', ?)", (json.dumps({"name": "Cursor search"}).encode().hex(),))
+for i, m in enumerate([{"role": "user", "content": "<user_query>where is it</user_query>"}, {"role": "assistant", "content": [{"type": "text", "text": "The okapi is in " + app}]}]):
+    db.execute("INSERT INTO blobs VALUES (?, ?)", (str(i), json.dumps(m, separators=(",", ":")).encode()))
+db.commit(); db.close()
+PY
+search() { "$HELPER" search "$1"; }
+found() { search "$1" | jq -r '[.matches[] | .agent + "/" + .id] | join(" ")'; }
+check "search finds what claude answered" test "$(found walrus)" = claude/aaaaaaaa-0000-0000-0000-0000000000f1
+check "search finds what codex answered" test "$(found heron)" = codex/bbbbbbbb-0000-0000-0000-0000000000f2
+check "search finds what you typed to grok" test "$(found flamingo)" = grok/cccccccc-0000-0000-0000-0000000000f3
+check "search finds opencode messages" test "$(found narwhal)" = opencode/ses_search0000000006
+check "search finds cursor messages" test "$(found okapi)" = cursor/dddddddd-0000-0000-0000-0000000000f4
+for w in toolonlyword tooluseword noiseword summaryonlyword devonlyword syntheticword groktoolword SECRET; do
+  check "search skips $w" test -z "$(found $w)"
+done
+check "search ignores case" test "$(found WALRUS)" = claude/aaaaaaaa-0000-0000-0000-0000000000f1
+check "search finds escaped non-ASCII text" test "$(found CAFÉ)" = grok/cccccccc-0000-0000-0000-0000000000f3
+check "a word matches the start of a word" test "$(found walr)" = claude/aaaaaaaa-0000-0000-0000-0000000000f1
+check "a word doesn't match inside a word" test -z "$(found alrus)"
+check "every word must appear" test -z "$(found 'walrus okapi')"
+rank() { search "$1" | jq -r '.matches[0].rank'; }
+check "the query as a phrase ranks 3" test "$(rank 'walrus migration')" = 3
+check "words in order ranks 2" test "$(rank 'walrus migr')" = 2
+check "all words in one message ranks 1" test "$(rank 'migration walrus')" = 1
+check "words spread over the conversation rank 0" test "$(rank 'pelicanword spreadtwo')" = 0
+check "the excerpt is around the match" test "$(search walrus | jq -r '.matches[0].snippet')" = "Here is the walrus migration plan."
+check "the excerpt says who said it" test "$(search walrus | jq -r '.matches[0].role') $(search flamingo | jq -r '.matches[0].role')" = "agent user"
+check "search needs two letters" bash -c "! '$HELPER' search a >/dev/null"
+rm -rf "$C/aaaaaaaa-0000-0000-0000-0000000000f1.jsonl" "$X/rollout-2026-10-12T12-00-00-bbbbbbbb-0000-0000-0000-0000000000f2.jsonl" \
+  "$G/cccccccc-0000-0000-0000-0000000000f3" "$(dirname "$(ls "$CURSOR_CONFIG_DIR"/chats/*/dddddddd-0000-0000-0000-0000000000f4/store.db)")"
 check "unknown command fails" bash -c "! '$HELPER' frobnicate >/dev/null"
 
 echo

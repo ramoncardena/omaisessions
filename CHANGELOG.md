@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Search inside conversations: after a pause in typing, sessions whose
+  messages (yours or the agent's) have every word follow the title matches,
+  with the words around the match; phrase matches rank first
 - Open a project's folder in the file manager: Open folder in its heading,
   or `o` in Projects
 - Projects tab: sessions grouped by git repository (a subfolder or a
