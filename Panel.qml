@@ -1,5 +1,7 @@
 import QtQuick
-import QtQuick.Controls
+// Namespaced: the shell's qs.Ui also exports TextField and ButtonGroup, and
+// those are the ones this panel uses.
+import QtQuick.Controls as Controls
 import QtQuick.Layouts
 import Quickshell
 import qs.Commons
@@ -26,7 +28,8 @@ Panel {
   readonly property var host: hostWidget || ({
     agents: [], sessions: [], home: "", loaded: false, busy: false, opening: "", runningCount: 0,
     needsYouCount: 0, statusMessage: "", errorMessage: "", now: 0, summary: "", maxSessions: 200,
-    refreshSeconds: 5, notifyNeedsYou: true, folders: [], projects: []
+    refreshSeconds: 5, notifyNeedsYou: true, folders: [], projects: [],
+    searching: false, contentQuery: "", contentHits: ({})
   })
 
   readonly property color foreground: root.barForeground
@@ -538,7 +541,7 @@ Panel {
           model: root.visibleProjects
           currentIndex: root.projectCursor
           onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
-          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+          Controls.ScrollBar.vertical: Controls.ScrollBar { policy: Controls.ScrollBar.AsNeeded }
           delegate: ProjectRow {
             required property var modelData
             required property int index
@@ -568,7 +571,7 @@ Panel {
           spacing: Style.space(2)
           boundsBehavior: Flickable.StopAtBounds
           model: root.visibleSessions
-          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+          Controls.ScrollBar.vertical: Controls.ScrollBar { policy: Controls.ScrollBar.AsNeeded }
           // ACTIVE above the running sessions and RECENT above the rest, when
           // anything is running.
           delegate: Column {
@@ -621,7 +624,7 @@ Panel {
           model: root.newFolders
           currentIndex: root.newCursor
           onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
-          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+          Controls.ScrollBar.vertical: Controls.ScrollBar { policy: Controls.ScrollBar.AsNeeded }
           delegate: FolderRow {
             required property var modelData
             required property int index
@@ -695,7 +698,7 @@ Panel {
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
-          elide: Text.ElideRight
+          wrapMode: Text.WordWrap
         }
       }
     }

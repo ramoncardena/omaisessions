@@ -115,7 +115,17 @@ BarWidget {
     }
     var entry = { id: root.moduleName }
     for (var key in root.settings) if (key !== "id") entry[key] = root.settings[key]
-    for (var change in changes) entry[change] = changes[change]
+    var changed = false
+    for (var change in changes) {
+      if (JSON.stringify(entry[change]) !== JSON.stringify(changes[change])) changed = true
+      entry[change] = changes[change]
+    }
+    // A value already at its bound (→ at 300 s, ← at 20 sessions) changes
+    // nothing; the shell reports an unchanged entry as false, not a failure.
+    if (!changed) {
+      errorMessage = ""
+      return true
+    }
     if (!root.bar.shell.updateEntryInline(root.moduleName, entry)) {
       errorMessage = "Could not save settings to shell.json"
       return false
@@ -241,7 +251,8 @@ BarWidget {
     function show(): void { root.open() }
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
-    function refresh(): void { root.refresh() }
+    // Every monitor's instance lists on its own; refresh them all.
+    function refresh(): void { root.broadcast("refresh") }
   }
 
   // ---------------------------------------------------------------- bar icon
@@ -269,6 +280,6 @@ BarWidget {
     // Accent while agents run; the bar's urgent color while one needs you.
     active: root.runningCount > 0
     activeColor: root.needsYouCount > 0 ? (root.bar ? root.bar.urgent : Color.urgent) : Color.accent
-    onPressed: function(mouseButton) { root.toggle() }
+    onPressed: function(mouseButton) { if (mouseButton === Qt.LeftButton) root.toggle() }
   }
 }
