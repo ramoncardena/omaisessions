@@ -9,6 +9,9 @@
 - New layout: Sessions and Projects views, and agent chips on their own
   line (they wrap instead of overflowing). The Running tab is gone: running
   sessions are pinned at the top of Sessions under Active, needs-you first
+- Lists take the room left in the panel, so a long one scrolls instead of
+  running off the bottom; inside a project, the heading or the Projects
+  button goes back to the list
 - README: a keybinding to toggle the panel (`SUPER + A`)
 - New session view (`n` or +): every folder an agent has worked in, last used
   first, or a path you type; starts an installed agent there, by default the

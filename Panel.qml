@@ -236,6 +236,12 @@ Panel {
     }
   }
 
+  // The list's height: whatever the panel has left below the header and
+  // above the footer, so a long list scrolls instead of running off the card.
+  readonly property real listRoom: Math.max(Style.space(120),
+    panel.fittedContentHeight(100000, Style.space(620)) - panel.verticalContentInset
+      - header.height - footer.height - contentColumn.spacing * 2)
+
   KeyboardPanel {
     id: panel
     anchorItem: root.anchorItem
@@ -289,149 +295,181 @@ Panel {
         width: parent.width
         spacing: Style.space(10)
 
-        PanelHero {
+        // Everything above the list, so the list can take what's left.
+        Column {
+          id: header
           width: parent.width
-          title: "AI Sessions"
-          meta: root.host.summary
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          iconComponent: Component {
-            SessionIcon {
-              size: Style.font.display
-              color: root.foreground
-            }
-          }
-          trailingControl: Component {
-            Row {
-              spacing: Style.space(4)
-              PanelActionButton {
-                iconText: "󰐕"
-                tooltipText: root.showNew ? "Back to sessions (n)" : "New session (n)"
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                onClicked: root.toggleView("new")
-              }
-              PanelActionButton {
-                iconText: "󰒓"
-                tooltipText: root.showSettings ? "Back to sessions (s)" : "Settings (s)"
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                onClicked: root.toggleView("settings")
-              }
-              PanelActionButton {
-                iconText: "󰑐"
-                tooltipText: "Refresh (r)"
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                enabled: !root.host.busy
-                onClicked: if (root.hostWidget) root.hostWidget.refresh()
+          spacing: Style.space(10)
+
+          PanelHero {
+            width: parent.width
+            title: "AI Sessions"
+            meta: root.host.summary
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            iconComponent: Component {
+              SessionIcon {
+                size: Style.font.display
+                color: root.foreground
               }
             }
-          }
-        }
-
-        Text {
-          visible: root.showNew
-          textFormat: Text.PlainText
-          text: "NEW SESSION"
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          font.letterSpacing: 1
-        }
-
-        ButtonGroup {
-          visible: root.showNew && root.installedAgents.length > 0
-          options: root.installedAgents
-          value: root.newAgent
-          focusable: false
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          fontSize: Style.font.bodySmall
-          onChanged: function(value) { root.newAgent = value; root.agentPicked = true }
-        }
-
-        ButtonGroup {
-          visible: root.view === "sessions"
-          options: root.viewOptions
-          value: root.tab
-          focusable: false
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          fontSize: Style.font.bodySmall
-          onChanged: function(value) { root.tab = value }
-        }
-
-        // Agent chips: wraps rather than overflowing, whatever is installed.
-        Flow {
-          visible: root.view === "sessions" && root.agentChips.length > 2
-          width: parent.width
-          spacing: Style.space(6)
-          Repeater {
-            model: root.agentChips
-            Chip {
-              required property var modelData
-              label: modelData.label
-              selected: root.agentFilter === modelData.value
-              onClicked: root.agentFilter = modelData.value
+            trailingControl: Component {
+              Row {
+                spacing: Style.space(4)
+                PanelActionButton {
+                  iconText: "󰐕"
+                  tooltipText: root.showNew ? "Back to sessions (n)" : "New session (n)"
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: root.toggleView("new")
+                }
+                PanelActionButton {
+                  iconText: "󰒓"
+                  tooltipText: root.showSettings ? "Back to sessions (s)" : "Settings (s)"
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: root.toggleView("settings")
+                }
+                PanelActionButton {
+                  iconText: "󰑐"
+                  tooltipText: "Refresh (r)"
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  enabled: !root.host.busy
+                  onClicked: if (root.hostWidget) root.hostWidget.refresh()
+                }
+              }
             }
           }
-        }
 
-        TextField {
-          id: searchField
-          visible: !root.showSettings
-          width: parent.width
-          placeholderText: root.showNew ? "Filter folders, or type a path like ~/Projects/new (/)"
-            : root.listingProjects ? "Search projects (/)" : "Search titles and folders (/)"
-          foreground: root.foreground
-          font.family: root.fontFamily
-          onAccepted: { root.endSearch(false); root.activate() }
-          onTextChanged: { root.newCursor = 0; root.projectCursor = 0 }
-          Keys.onEscapePressed: function(event) { root.endSearch(true); event.accepted = true }
-          Keys.onDownPressed: function(event) { root.endSearch(false); event.accepted = true }
-        }
+          Text {
+            visible: root.showNew
+            textFormat: Text.PlainText
+            text: "NEW SESSION"
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            font.letterSpacing: 1
+          }
 
-        Text {
-          visible: text !== ""
-          width: parent.width
-          textFormat: Text.PlainText
-          text: root.host.errorMessage !== "" ? root.host.errorMessage : root.host.statusMessage
-          color: root.host.errorMessage !== "" ? Color.urgent : root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.bodySmall
-          wrapMode: Text.WordWrap
-        }
+          ButtonGroup {
+            visible: root.showNew && root.installedAgents.length > 0
+            options: root.installedAgents
+            value: root.newAgent
+            focusable: false
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            fontSize: Style.font.bodySmall
+            onChanged: function(value) { root.newAgent = value; root.agentPicked = true }
+          }
 
-        Text {
-          visible: root.host.loaded && root.visibleSessions.length === 0 && root.view === "sessions" && !root.listingProjects
-          width: parent.width
-          textFormat: Text.PlainText
-          text: searchField.text.trim() !== "" ? "No sessions match \"" + searchField.text.trim() + "\"."
-            : "No sessions yet. Start Claude Code, Codex, Grok, Cursor or OpenCode in any folder and they show up here."
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.body
-          wrapMode: Text.WordWrap
-        }
+          ButtonGroup {
+            visible: root.view === "sessions"
+            options: root.viewOptions
+            value: root.tab
+            focusable: false
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            fontSize: Style.font.bodySmall
+            // Projects again, from inside a project, goes back to the list.
+          onChanged: function(value) { if (value !== root.tab) root.tab = value; else if (root.openProject !== "") root.leaveProject() }
+          }
 
-        // The open project: its path, and the way back.
-        Text {
-          visible: root.view === "sessions" && root.openProject !== ""
-          width: parent.width
-          textFormat: Text.PlainText
-          text: "PROJECT · " + Model.shortPath(root.openProject, root.host.home)
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          font.letterSpacing: 1
-          elide: Text.ElideMiddle
+          // Agent chips: wraps rather than overflowing, whatever is installed.
+          Flow {
+            visible: root.view === "sessions" && root.agentChips.length > 2
+            width: parent.width
+            spacing: Style.space(6)
+            Repeater {
+              model: root.agentChips
+              Chip {
+                required property var modelData
+                label: modelData.label
+                selected: root.agentFilter === modelData.value
+                onClicked: root.agentFilter = modelData.value
+              }
+            }
+          }
+
+          TextField {
+            id: searchField
+            visible: !root.showSettings
+            width: parent.width
+            placeholderText: root.showNew ? "Filter folders, or type a path like ~/Projects/new (/)"
+              : root.listingProjects ? "Search projects (/)" : "Search titles and folders (/)"
+            foreground: root.foreground
+            font.family: root.fontFamily
+            onAccepted: { root.endSearch(false); root.activate() }
+            onTextChanged: { root.newCursor = 0; root.projectCursor = 0 }
+            Keys.onEscapePressed: function(event) { root.endSearch(true); event.accepted = true }
+            Keys.onDownPressed: function(event) { root.endSearch(false); event.accepted = true }
+          }
+
+          Text {
+            visible: text !== ""
+            width: parent.width
+            textFormat: Text.PlainText
+            text: root.host.errorMessage !== "" ? root.host.errorMessage : root.host.statusMessage
+            color: root.host.errorMessage !== "" ? Color.urgent : root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.WordWrap
+          }
+
+          Text {
+            visible: root.host.loaded && root.visibleSessions.length === 0 && root.view === "sessions" && !root.listingProjects
+            width: parent.width
+            textFormat: Text.PlainText
+            text: searchField.text.trim() !== "" ? "No sessions match \"" + searchField.text.trim() + "\"."
+              : "No sessions yet. Start Claude Code, Codex, Grok, Cursor or OpenCode in any folder and they show up here."
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            wrapMode: Text.WordWrap
+          }
+
+          // The open project: its path, and the way back (as Esc).
+          Item {
+            visible: root.view === "sessions" && root.openProject !== ""
+            width: parent.width
+            height: backLabel.implicitHeight
+            // A cap-height chevron: "‹" sits on the x-height, below the caps.
+            Text {
+              id: backArrow
+              anchors.verticalCenter: parent.verticalCenter
+              textFormat: Text.PlainText
+              text: "\uF053"
+              color: backLabel.color
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+            Text {
+              id: backLabel
+              anchors.left: backArrow.right
+              anchors.leftMargin: Style.space(4)
+              anchors.right: parent.right
+              textFormat: Text.PlainText
+              text: "PROJECTS · " + Model.shortPath(root.openProject, root.host.home)
+              color: backArea.containsMouse ? root.foreground : root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.letterSpacing: 1
+              elide: Text.ElideMiddle
+            }
+            MouseArea {
+              id: backArea
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.leaveProject()
+            }
+          }
         }
 
         ListView {
           id: projectList
           width: parent.width
-          height: Math.min(contentHeight, Style.space(440))
+          height: Math.min(contentHeight, root.listRoom)
           visible: root.view === "sessions" && root.listingProjects && root.visibleProjects.length > 0
           clip: true
           spacing: Style.space(2)
@@ -463,7 +501,7 @@ Panel {
         ListView {
           id: sessionList
           width: parent.width
-          height: Math.min(contentHeight, Style.space(440))
+          height: Math.min(contentHeight, root.listRoom)
           visible: root.visibleSessions.length > 0 && root.view === "sessions" && !root.listingProjects
           clip: true
           spacing: Style.space(2)
@@ -514,7 +552,7 @@ Panel {
         ListView {
           id: folderList
           width: parent.width
-          height: Math.min(contentHeight, Style.space(400))
+          height: Math.min(contentHeight, root.listRoom)
           visible: root.showNew && root.newFolders.length > 0
           clip: true
           spacing: Style.space(2)
@@ -585,6 +623,7 @@ Panel {
         }
 
         Text {
+          id: footer
           width: parent.width
           textFormat: Text.PlainText
           text: root.showSettings ? "↑↓ select · ←→ change · Enter toggle · s or Esc back"
