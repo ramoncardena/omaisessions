@@ -1070,13 +1070,11 @@ def public(session):
 
 
 MODULE_ID = "io.github.ramoncardena.omaisessions"
-AGENT_NOUN = {"claude": "Claude Code", "codex": "Codex", "grok": "Grok", "cursor": "Cursor", "opencode": "OpenCode"}
-
-
-def markup_escape(text):
-    # Notification bodies may be rendered as markup, and titles can be written
-    # by the agent's model: show them as text.
-    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+# Fixed argv for toasts: never put titles, folders or prompts on a command
+# line (another local account can read /proc/<pid>/cmdline). Details stay
+# in the panel; clicking the toast opens it on what needs you.
+NOTIFY_HEADLINE = "AI Sessions"
+NOTIFY_BODY = "An agent needs you — open the panel to see which."
 
 
 def short_home(path):
@@ -1084,25 +1082,19 @@ def short_home(path):
     return "~" + p[len(str(HOME)):] if p == str(HOME) or p.startswith(str(HOME) + "/") else p
 
 
-def send_notification(headline, body):
-    """One toast; clicking it opens the panel, which lands on what needs you.
+def send_notification():
+    """One generic toast; clicking it opens the panel on what needs you.
 
-    Omarchy's sender hands the text to D-Bus as plain values and carries the
-    click command as data. notify-send, the fallback, parses its arguments as
-    options, so the text goes after "--": a title the agent's model wrote,
-    like "--hint=...", must never become a hint (one of them runs a command
-    on click).
+    Omarchy's sender carries the click command as data. notify-send, the
+    fallback, gets the fixed text after "--" so its options stay ours.
     """
-    body = markup_escape(body)
-    if body.startswith("-"):
-        body = "\u2060" + body  # also never one of the sender's own flags
     omarchy_send, shell = shutil.which("omarchy-notification-send"), shutil.which("omarchy-shell")
     if omarchy_send:
-        cmd = [omarchy_send, "--app-name=AI Sessions", "--urgency=normal", headline, body]
+        cmd = [omarchy_send, "--app-name=AI Sessions", "--urgency=normal", NOTIFY_HEADLINE, NOTIFY_BODY]
         if shell:
             cmd += ["--exec", shell, "shell", "summon", MODULE_ID, "{}"]
     else:
-        cmd = ["notify-send", "--app-name=AI Sessions", "--urgency=normal", "--", headline, body]
+        cmd = ["notify-send", "--app-name=AI Sessions", "--urgency=normal", "--", NOTIFY_HEADLINE, NOTIFY_BODY]
     try:
         subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
     except (OSError, subprocess.SubprocessError):
@@ -1110,10 +1102,11 @@ def send_notification(headline, body):
 
 
 def notify_waiting(sessions):
-    """Notify once per episode of a session waiting on you.
+    """Notify once when any session starts (or restarts) waiting on you.
 
     The bar runs one widget per monitor and each one lists; the lock and the
-    record of what was already announced make exactly one of them notify.
+    record of what was already announced make exactly one toast for a batch
+    of new waits. The toast itself is generic — no session details on argv.
     """
     if shutil.which("omarchy-notification-send") is None and shutil.which("notify-send") is None:
         return
@@ -1132,13 +1125,14 @@ def notify_waiting(sessions):
             seen = {}
         seen = seen if isinstance(seen, dict) else {}
         announced = {}
+        fresh = False
         for key, s in waiting.items():
             mark = str(s.get("stateSince") or "")
             announced[key] = mark
-            if seen.get(key) == mark:
-                continue
-            send_notification(AGENT_NOUN.get(s["agent"], s["agent"]) + " needs you",
-                              (s.get("waitingFor") or "waiting") + " · " + short_home(s["cwd"]) + "\n" + s["title"])
+            if seen.get(key) != mark:
+                fresh = True
+        if fresh:
+            send_notification()
         if announced != seen:
             fd, tmp = tempfile.mkstemp(dir=CACHE_DIR, prefix=".notified.")
             with os.fdopen(fd, "w", encoding="utf-8") as f:

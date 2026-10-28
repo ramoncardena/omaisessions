@@ -22,8 +22,8 @@ adds the pieces that make that useful day to day:
 - **Search inside conversations** — not just titles and folders: after a pause,
   matches what you typed and what the agent answered, with a short excerpt
 - **Needs-you bar** — accent while agents work, urgent while one waits; open
-  the panel and land on that session; optional desktop notification (once per
-  wait) that summons the same place
+  the panel and land on that session; optional generic desktop notification
+  (no session details on the toast) that summons the same place
 - **Safe resume** — a running session focuses its window instead of starting a
   second copy that would corrupt the history
 
@@ -86,7 +86,7 @@ Press `s` (or the gear) in the panel. Changes are saved to your bar config
 | Setting | Default | |
 |---|---|---|
 | Refresh every | 5 s | How fast the icon notices an agent that needs you; each refresh takes about 0.1 s |
-| Notify when an agent needs you | on | One desktop notification per wait |
+| Notify when an agent needs you | on | One generic desktop notification per new wait (details stay in the panel) |
 | Sessions to show | 200 | |
 
 ## Requirements
@@ -215,10 +215,12 @@ Agent history is never modified.
 - `xdg-open` on a project folder, when you ask to open it (only a folder
   that exists, never a file).
 - `omarchy-notification-send` (or `notify-send` elsewhere), when an agent
-  starts waiting on you, if enabled. Its click action is
-  `omarchy-shell shell summon` for this panel, passed as data, never a shell
-  string. The text is escaped, since notifications render markup, and handed
-  over as plain values: a title can't become an option or a hint.
+  starts waiting on you, if enabled. The toast is generic ("An agent needs
+  you") on purpose: titles, folders, wait reasons and prompts stay out of
+  every subprocess command line (another local account can read those).
+  Which session needs you is only in the panel; the click action is
+  `omarchy-shell shell summon` for this panel, passed as data, never a
+  shell string. Several new waits in one refresh share one toast.
 
 Every command is an argument list, never a shell string. Session ids must
 match a strict pattern before they reach a command line, a session opens in

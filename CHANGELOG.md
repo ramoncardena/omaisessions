@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.2
+
+- Needs-you notifications are generic only ("An agent needs you"): titles,
+  folders, wait reasons and prompts never appear on a subprocess command line;
+  several new waits in one refresh share one toast. Details stay in the panel.
+
 ## 0.5.1
 
 - Cursor: `$CURSOR_CONFIG_DIR` is respected alone (defaults are only used when

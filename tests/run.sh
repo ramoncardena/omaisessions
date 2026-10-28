@@ -399,17 +399,20 @@ db.commit()
 PY
 check "opencode reply complete" test "$(st ses_titled0000000001)" = "idle|"
 
-# Notifications: once per wait, never twice for parallel lists (one bar
-# widget per monitor), sent with Omarchy's sender (plain D-Bus values, a
-# click opens the panel), and the text is never markup or an option.
+# Notifications: generic toast only (no title/cwd/prompt on argv — another
+# local account can read /proc cmdline). Once per new wait batch; parallel
+# lists (one bar widget per monitor) share the lock; click opens the panel.
 N="$T/notified-omarchy-notification-send"
-nsent() { grep -cx 'Claude Code needs you' "$N" 2>/dev/null || true; }
+nsent() { grep -cx 'AI Sessions' "$N" 2>/dev/null || true; }
 reg $cp $A1 waiting "permission prompt" 1792000005000
 "$HELPER" list >/dev/null
 check "no notification without --notify" test "$(nsent)" = ""
 "$HELPER" list --notify >/dev/null
 check "notifies when a session starts waiting" test "$(nsent)" = 1
-check "notification says why and where" grep -qxF "permission prompt · ~/Projects/my-app" "$N"
+check "notification body is generic" grep -qxF "An agent needs you — open the panel to see which." "$N"
+check "notification argv has no session title" bash -c "! grep -qF 'Login bug fix' '$N'"
+check "notification argv has no folder" bash -c "! grep -qF 'Projects/my-app' '$N'"
+check "notification argv has no wait reason" bash -c "! grep -qF 'permission prompt' '$N'"
 check "clicking opens the panel" bash -c "tr '\n' ' ' <'$N' | grep -qF -- '--exec $T/stub/omarchy-shell shell summon io.github.ramoncardena.omaisessions {}'"
 "$HELPER" list --notify >/dev/null
 check "one notification per wait" test "$(nsent)" = 1
@@ -419,26 +422,24 @@ check "a new wait notifies again" test "$(nsent)" = 2
 rm -f "$N"; reg $cp $A1 waiting "permission prompt" 1792000012000
 par=(); for i in 1 2 3; do "$HELPER" list --notify >/dev/null & par+=($!); done; wait "${par[@]}"
 check "parallel lists notify once" test "$(nsent)" = 1
+# Two sessions start waiting in one refresh: still one generic toast.
 reg $cp $A1 idle "" 1792000013000
 A9=aaaaaaaa-0000-0000-0000-000000000009
 cat >"$C/$A9.jsonl" <<JSON
-{"type":"user","cwd":"$HOME/Projects/app","message":{"role":"user","content":"hi"}}
-{"type":"custom-title","customTitle":"<b>Bold</b> & <a href='x'>link</a>"}
+{"type":"user","cwd":"$HOME/Projects/app","message":{"role":"user","content":"secret prompt about acme"}}
+{"type":"custom-title","customTitle":"Secret Acme Title"}
 JSON
-reg $cp2 $A9 waiting "permission prompt" 1792000014000
-rm -f "$N"; "$HELPER" list --notify >/dev/null
-check "notification text is escaped" grep -qF "&lt;b&gt;Bold&lt;/b&gt; &amp; &lt;a href='x'&gt;link&lt;/a&gt;" "$N"
-# A model-written title that looks like an option stays text; and without
-# Omarchy's sender, notify-send gets the text after "--".
-printf '%s\n' '{"type":"custom-title","customTitle":"--hint=string:omarchy-exec-argv:[\"bash\"]"}' >>"$C/$A9.jsonl"
-reg $cp2 $A9 waiting "permission prompt" 1792000015000
-rm -f "$N"; "$HELPER" list --notify >/dev/null
-check "an option-like title is only the body's second line" grep -qxF -- '--hint=string:omarchy-exec-argv:["bash"]' "$N"
-check "the body starts with the reason" test "$(sed -n 4p "$N")" = "permission prompt · ~/Projects/app"
+rm -f "$N" "$CLAUDE_CONFIG_DIR/notified.json" 2>/dev/null; rm -f "$XDG_CACHE_HOME/omaisessions/notified.json"
+reg $cp $A1 waiting "permission prompt" 1792000014000
+reg $cp2 $A9 waiting "dialog open" 1792000014000
+"$HELPER" list --notify >/dev/null
+check "several new waits notify once" test "$(nsent)" = 1
+check "batched toast stays generic" bash -c "! grep -qE 'Secret Acme|secret prompt|Projects/app|permission prompt|dialog open' '$N'"
 mkdir -p "$T/only-notify-send"; cp "$T/stub/notify-send" "$T/only-notify-send/"
 reg $cp2 $A9 waiting "permission prompt" 1792000016000
 PATH="$T/only-notify-send" /usr/bin/python3 "$HELPER" list --notify >/dev/null
 check "notify-send fallback reads no options from the text" test "$(sed -n 3p "$T/notified-notify-send")" = "--"
+check "notify-send body is generic" grep -qxF "An agent needs you — open the panel to see which." "$T/notified-notify-send"
 rm -f "$C/$A9.jsonl" "$N" "$T/notified-notify-send" "$E"
 stop
 rm -f "$CLAUDE_CONFIG_DIR"/sessions/*.json "$GROK_HOME/active_sessions.json"
