@@ -11,35 +11,37 @@ one and it opens a terminal in that conversation's folder with the agent already
 resuming it. While agents run, the bar icon tells you whether one is working or
 waiting on you.
 
+## Why this one
+
+Other marketplace plugins resume past chats or watch who's waiting. This one
+does both, across every agent you actually use — including **Cursor** — and
+adds the pieces that make that useful day to day:
+
+- **Projects view** — sessions grouped by git repository (worktrees count),
+  across every agent; open one, start a new session there, or open the folder
+- **Search inside conversations** — not just titles and folders: after a pause,
+  matches what you typed and what the agent answered, with a short excerpt
+- **Needs-you bar** — accent while agents work, urgent while one waits; open
+  the panel and land on that session; optional desktop notification (once per
+  wait) that summons the same place
+- **Safe resume** — a running session focuses its window instead of starting a
+  second copy that would corrupt the history
+
 ## Features
 
 - Two views, **Sessions** and **Projects**, and a row of agent chips (All,
   then each agent with sessions) that narrows either one
 - Running sessions are pinned at the top under **Active**: what needs you
   first, then what's done, then what's working
-- Projects: sessions grouped by git repository (subfolders and worktrees
-  count as the repository) or by folder outside git, across every agent;
-  `Enter` opens one, `n` starts a new session there, `o` opens its folder
 - Sessions that are open right now show what they're doing: **working**,
   **needs you** (blocked on a permission or a question, with the reason) or
   **your turn** (done), and for how long
-- The bar icon takes the accent color while agents run and the urgent color
-  while one needs you; opening the panel then lands on that session, so
-  Enter switches straight to its window
-- A desktop notification when an agent starts waiting on you (once per wait,
-  however many monitors run the bar); clicking it opens the panel on that
-  session
-- Picking a running session switches to its window instead of opening a
-  second copy (two copies writing one session would corrupt it)
 - Start a new session (`n`): pick any folder an agent has worked in, or type
   a path, and an installed agent (the one you used there last, by default)
 - Titles from the agent's own naming (`/rename`, AI titles, Codex thread
   names, Grok, Cursor and OpenCode titles), falling back to your first prompt
 - Folder, git branch and last activity for each session; sessions whose folder
   was deleted are flagged
-- Search across titles and folders as you type, and inside the conversations
-  themselves (what you typed and what the agent answered) once you pause:
-  sessions that mention it follow, with the words around the match
 - Keyboard-first: works without touching the mouse
 
 ## Screenshots
@@ -131,7 +133,7 @@ and prints JSON for the panel:
 | Claude Code | `~/.claude/projects/*/<id>.jsonl` (or `$CLAUDE_CONFIG_DIR`) | `claude --resume <id>` | `~/.claude/sessions/<pid>.json` |
 | Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (or `$CODEX_HOME`) | `codex resume <id>` | a `codex` window, matched to the sessions `codex app-server` holds locks for |
 | Grok | `~/.grok/sessions/<folder>/<id>/summary.json` (or `$GROK_HOME`) | `grok --resume <id>` | `~/.grok/active_sessions.json` |
-| Cursor | `~/.cursor/chats/<md5 of folder>/<id>/store.db` (or `$CURSOR_CONFIG_DIR`) | `cursor-agent --resume <id>` | process with the store open |
+| Cursor | `$CURSOR_CONFIG_DIR/chats/…`, else `$XDG_CONFIG_HOME/cursor/chats/…` and `~/.cursor/chats/<md5 of folder>/<id>/store.db` | `cursor-agent --resume <id>` | process with the store open |
 | OpenCode | `~/.local/share/opencode/opencode.db` (or `$XDG_DATA_HOME`) | `opencode --session <id>` | `opencode --session <id>`, or the newest session in its folder |
 
 What a running session is doing comes from the agent's own records:

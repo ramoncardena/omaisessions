@@ -555,13 +555,15 @@ class Cursor:
     binary = "cursor-agent"
 
     def roots(self):
-        # Same lookup as cursor-agent: CURSOR_CONFIG_DIR, else
-        # $XDG_CONFIG_HOME/cursor, else ~/.cursor. The bar may not share the
-        # terminal's XDG_CONFIG_HOME, so both defaults are checked.
-        dirs = []
+        # Same lookup as cursor-agent: CURSOR_CONFIG_DIR wins; otherwise
+        # $XDG_CONFIG_HOME/cursor, then ~/.config/cursor, then ~/.cursor.
+        # The bar may not share the terminal's XDG_CONFIG_HOME, so both
+        # config defaults are checked when CURSOR_CONFIG_DIR is unset.
         if os.environ.get("CURSOR_CONFIG_DIR", "").strip():
-            dirs.append(Path(os.environ["CURSOR_CONFIG_DIR"]))
-        dirs += [Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "cursor", HOME / ".config" / "cursor", HOME / ".cursor"]
+            dirs = [Path(os.environ["CURSOR_CONFIG_DIR"])]
+        else:
+            dirs = [Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "cursor",
+                    HOME / ".config" / "cursor", HOME / ".cursor"]
         seen, result = set(), []
         for d in dirs:
             chats = d / "chats"

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.1
+
+- Cursor: `$CURSOR_CONFIG_DIR` is respected alone (defaults are only used when
+  it is unset); tests isolate `$XDG_CONFIG_HOME` so real chats can't leak in
+- README: a short **Why this one** section for the Projects view, conversation
+  search, needs-you bar, and safe resume
+
 ## 0.5.0
 
 - Settings: a value already at its bound (`→` at 300 s, `←` at 20 sessions)

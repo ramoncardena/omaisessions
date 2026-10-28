@@ -10,7 +10,7 @@ HELPER="$(cd "$(dirname "$0")/.." && pwd)/bin/omaisessions"
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 
-export HOME="$T/home" XDG_CACHE_HOME="$T/cache"
+export HOME="$T/home" XDG_CACHE_HOME="$T/cache" XDG_CONFIG_HOME="$T/home/.config"
 export CLAUDE_CONFIG_DIR="$HOME/.claude" CODEX_HOME="$HOME/.codex" GROK_HOME="$HOME/.grok" CURSOR_CONFIG_DIR="$HOME/.cursor"
 export XDG_DATA_HOME="$HOME/.local/share"
 mkdir -p "$HOME/Projects/app" "$HOME/Projects/my-app" "$T/stub"
@@ -474,7 +474,7 @@ check "odd files leave the other sessions" test "$(jq -r '.sessions[] | select(.
 rm -rf "$C/aaaaaaaa-0000-0000-0000-00000000000"[ab].jsonl "$G/cccccccc-0000-0000-0000-00000000000a" "$X/rollout-2026-10-12T11-00-00-odd.jsonl" "$CLAUDE_CONFIG_DIR/sessions/odd.json" "$GROK_HOME/active_sessions.json"
 
 # No history at all.
-check "empty home lists nothing" test "$(HOME="$T/empty" XDG_DATA_HOME="$T/empty/.local/share" CLAUDE_CONFIG_DIR="$T/empty/.claude" CODEX_HOME="$T/empty/.codex" GROK_HOME="$T/empty/.grok" CURSOR_CONFIG_DIR="$T/empty/.cursor" "$HELPER" list | jq '.sessions | length')" = 0
+check "empty home lists nothing" test "$(HOME="$T/empty" XDG_CONFIG_HOME="$T/empty/.config" XDG_DATA_HOME="$T/empty/.local/share" CLAUDE_CONFIG_DIR="$T/empty/.claude" CODEX_HOME="$T/empty/.codex" GROK_HOME="$T/empty/.grok" CURSOR_CONFIG_DIR="$T/empty/.cursor" "$HELPER" list | jq '.sessions | length')" = 0
 
 # Opening.
 out=$("$HELPER" open claude aaaaaaaa-0000-0000-0000-000000000001 "$HOME/Projects/my-app")
